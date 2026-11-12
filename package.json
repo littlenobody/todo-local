@@ -1,6 +1,6 @@
 {
   "name": "todo-local",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "本地待办清单：项目 / 多级子任务 / 备注 / 标签过滤 / 到期提醒 / 便笺模式",
   "main": "src/main/main.js",
   "private": true,

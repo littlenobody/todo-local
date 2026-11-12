@@ -2,8 +2,9 @@
 const fs = require('fs');
 const path = require('path');
 const { app, BrowserWindow, Tray, Menu, Notification, ipcMain, globalShortcut, screen, shell } = require('electron');
-const { readJson, writeJsonAtomic } = require('./store');
+const { readJson, writeJsonAtomic, writeTextAtomic } = require('./store');
 const TaskLib = require('../shared/tasks.js');
+const MemoLib = require('../shared/memo.js');
 const { Reminders } = require('./reminders');
 const { sendToBottom } = require('./zorder');
 const { createWindowIcon, createTrayIcon } = require('./icon');
@@ -23,6 +24,7 @@ let updater = null;
 let state = null;
 let winPrefs = {};
 let dataDir = '';
+let memosDir = '';
 let stateFile = '';
 let windowFile = '';
 let saveTimer = null;
@@ -286,6 +288,22 @@ function createWindow(firstRun) {
   });
 }
 
+/* ---------- 项目备忘录文件 ---------- */
+
+const memoFile = (id) => path.join(memosDir, `${id}.html`);
+
+function removeMemoFiles(id) {
+  if (!MemoLib.isValidMemoId(id)) return;
+  const file = memoFile(id);
+  for (const f of [file, `${file}.bak`, `${file}.tmp`]) {
+    try {
+      fs.rmSync(f, { force: true });
+    } catch (err) {
+      console.warn('[memo] 清理备忘录失败：', err.message);
+    }
+  }
+}
+
 /* ---------- 提醒 ---------- */
 
 function notify(title, body, taskId) {
@@ -326,6 +344,7 @@ function start() {
   Menu.setApplicationMenu(null);
 
   dataDir = app.getPath('userData');
+  memosDir = path.join(dataDir, 'memos');
   stateFile = path.join(dataDir, 'todo-data.json');
   windowFile = path.join(dataDir, 'window.json');
   const firstRun = !fs.existsSync(stateFile);
@@ -348,7 +367,12 @@ function start() {
   ipcMain.on('state:save', (e, incoming) => {
     if (!alive() || e.sender !== win.webContents) return;
     const prev = state.settings;
+    const prevIds = state.projects.map((p) => p.id);
     state = TaskLib.normalizeState(incoming);
+    // 项目被删除后，连带清理它的备忘录文件
+    for (const id of prevIds) {
+      if (!state.projects.some((p) => p.id === id)) removeMemoFiles(id);
+    }
     scheduleSave();
     onSettingsChanged(prev);
   });
@@ -369,6 +393,33 @@ function start() {
   });
   ipcMain.on('app:quit', () => app.quit());
   ipcMain.on('app:open-data-dir', () => shell.openPath(dataDir));
+  ipcMain.on('app:open-external', (e, url) => {
+    if (!alive() || e.sender !== win.webContents) return;
+    const href = MemoLib.safeLinkHref(url); // 只放行 http / https / mailto
+    if (href) shell.openExternal(href);
+  });
+
+  /* 项目备忘录：每个项目一个 HTML 文件（图片以 data URL 内嵌），和任务数据分开存放 */
+  ipcMain.handle('memo:load', (e, id) => {
+    if (!alive() || e.sender !== win.webContents || !MemoLib.isValidMemoId(id)) return null;
+    try {
+      return fs.readFileSync(memoFile(id), 'utf8');
+    } catch (err) {
+      return err && err.code === 'ENOENT' ? '' : null;
+    }
+  });
+  ipcMain.handle('memo:save', (e, id, html) => {
+    if (!alive() || e.sender !== win.webContents || !MemoLib.isValidMemoId(id)) return false;
+    if (!state.projects.some((p) => p.id === id)) return false; // 已删除或不存在的项目不再写入
+    if (typeof html !== 'string' || html.length > MemoLib.MAX_MEMO_CHARS) return false;
+    try {
+      writeTextAtomic(memoFile(id), html, true);
+      return true;
+    } catch (err) {
+      console.error('[memo] 保存失败：', err);
+      return false;
+    }
+  });
 
   updater = createUpdater({
     dir: path.join(dataDir, 'updates'),

@@ -56,7 +56,10 @@
     saveTimer = null;
     api.save(state);
   }
-  window.addEventListener('pagehide', flush);
+  window.addEventListener('pagehide', () => {
+    flush();
+    window.Memo.flush();
+  });
 
   /* ---------- 视图辅助 ---------- */
   function scopeProjects() {
@@ -1028,6 +1031,7 @@
     const ok = await confirmDialog('删除项目', `确定删除项目「${project.name}」及其中的 ${count} 个任务吗？此操作无法撤销。`, '删除', true);
     if (!ok) return;
     state.projects = state.projects.filter((p) => p.id !== project.id);
+    window.Memo.discard(project.id);
     if (!state.projects.length) state.projects.push(TL.createProject('收件箱', 0));
     if (state.ui.view === project.id) state.ui.view = state.projects[0].id;
     composer = null;
@@ -1231,6 +1235,7 @@
     renderTagbar();
     renderList();
     updateTagSuggest();
+    window.Memo.sync();
   }
 
   function bindStatic() {
@@ -1259,6 +1264,7 @@
     $('#btn-max').addEventListener('click', () => api.toggleMaximize());
     $('#btn-close').addEventListener('click', () => {
       flush();
+      window.Memo.flush();
       api.close();
     });
     $('#titlebar').addEventListener('dblclick', (e) => {
@@ -1353,6 +1359,17 @@
     api.onUpdateStatus(onUpdateStatus);
     api.getUpdateStatus().then(onUpdateStatus);
     bindStatic();
+    window.Memo.init({
+      api,
+      getProject: () => (state.ui.view === 'all' ? null : projectById(state.ui.view) || null),
+      onHasMemoChange: (id, has) => {
+        const p = projectById(id);
+        if (!p || !!p.hasMemo === has) return;
+        p.hasMemo = has;
+        commit(true); // 立即发送，确保先于随后的备忘录保存到达主进程
+        window.Memo.sync();
+      },
+    });
     applyMode();
     renderAll();
   }

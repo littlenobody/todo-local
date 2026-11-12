@@ -32,6 +32,9 @@ function createEdgeDock({ screen, getWin, isActive, onChange }) {
     return w && !w.isDestroyed() ? w : null;
   };
 
+  /** 取整并消除 -0：Math.round(-0.3) 是 -0，Electron 的整数参数转换会拒绝它并抛 TypeError */
+  const px = (v) => Math.round(v) + 0;
+
   function stopAnim() {
     clearInterval(animTimer);
     animTimer = null;
@@ -59,7 +62,7 @@ function createEdgeDock({ screen, getWin, isActive, onChange }) {
       if (!cur) return stopAnim();
       const k = Math.min(1, (Date.now() - start) / ANIM_MS);
       const e = 1 - Math.pow(1 - k, 3);
-      cur.setPosition(Math.round(from.x + (target.x - from.x) * e), Math.round(from.y + (target.y - from.y) * e));
+      cur.setPosition(px(from.x + (target.x - from.x) * e), px(from.y + (target.y - from.y) * e));
       if (k >= 1) {
         stopAnim();
         if (done) done();

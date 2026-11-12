@@ -190,6 +190,7 @@
       name: String(name || '').trim() || '未命名项目',
       color: PROJECT_COLORS[i % PROJECT_COLORS.length],
       createdAt: Date.now(),
+      hasMemo: false, // 项目备忘录内容单独存放，这里只记录是否有内容（用于浮标提示）
       tasks: [],
     };
   }
@@ -201,6 +202,7 @@
       name: typeof r.name === 'string' && r.name.trim() ? r.name : '未命名项目',
       color: typeof r.color === 'string' && /^#[0-9a-fA-F]{6}$/.test(r.color) ? r.color : PROJECT_COLORS[index % PROJECT_COLORS.length],
       createdAt: Number.isFinite(r.createdAt) ? r.createdAt : Date.now(),
+      hasMemo: !!r.hasMemo,
       tasks: Array.isArray(r.tasks) ? r.tasks.map(normalizeTask) : [],
     };
   }

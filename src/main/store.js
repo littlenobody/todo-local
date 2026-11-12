@@ -37,4 +37,21 @@ function writeJsonAtomic(file, data, withBackup) {
   fs.renameSync(tmp, file);
 }
 
-module.exports = { readJson, writeJsonAtomic };
+/** 原子写入文本文件（备忘录等）：先写临时文件再改名，并定期保留 .bak 备份 */
+function writeTextAtomic(file, text, withBackup) {
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (withBackup) {
+    try {
+      const bak = `${file}.bak`;
+      const stale = !fs.existsSync(bak) || Date.now() - fs.statSync(bak).mtimeMs > BACKUP_INTERVAL_MS;
+      if (stale && fs.existsSync(file)) fs.copyFileSync(file, bak);
+    } catch {
+      /* 备份失败不影响保存 */
+    }
+  }
+  const tmp = `${file}.tmp`;
+  fs.writeFileSync(tmp, text, 'utf8');
+  fs.renameSync(tmp, file);
+}
+
+module.exports = { readJson, writeJsonAtomic, writeTextAtomic };
