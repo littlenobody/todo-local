@@ -145,6 +145,18 @@ function applyTraits() {
   else createTray();
 }
 
+function applyAutoStart(enable) {
+  try {
+    app.setLoginItemSettings({
+      openAtLogin: !!enable,
+      path: process.execPath,
+      args: [],
+    });
+  } catch (err) {
+    console.warn('[autostart] 设置开机自启失败：', err.message);
+  }
+}
+
 function onSettingsChanged(prev) {
   const cur = state.settings;
   if (cur.noteMode !== prev.noteMode) {
@@ -155,6 +167,9 @@ function onSettingsChanged(prev) {
     showWindow();
   } else if (cur.noteOpacity !== prev.noteOpacity) {
     applyTraits();
+  }
+  if (cur.autoStart !== prev.autoStart) {
+    applyAutoStart(cur.autoStart);
   }
 }
 
@@ -283,6 +298,7 @@ function start() {
     }
   }
   state = TaskLib.normalizeState(rawState);
+  applyAutoStart(state.settings.autoStart);
   const prefs = readJson(windowFile, {});
   winPrefs = prefs && typeof prefs === 'object' ? prefs : {};
 

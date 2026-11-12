@@ -180,6 +180,7 @@ body.drawer-open.note #scrim, body.drawer-open.narrow #scrim { display: block; }
 /* ---------- 工具栏 ---------- */
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #toolbar { display: flex; gap: 6px; padding: 8px 12px 4px; flex: none; }
+body.note:not(.show-search) #toolbar { display: none; }
 .search-box {
   flex: 1;
   min-width: 0;
@@ -254,6 +255,30 @@ body.drawer-open.note #scrim, body.drawer-open.narrow #scrim { display: block; }
 .row.flash { animation: flash 1.8s ease-out; }
 @keyframes flash { 0% { background: var(--flash); } 100% { background: transparent; } }
 
+.node.is-dragging { opacity: 0.4; }
+.row.drop-before { box-shadow: 0 -2px 0 0 var(--accent); }
+.row.drop-after { box-shadow: 0 2px 0 0 var(--accent); }
+.row.drop-inside { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--hover); }
+
+.drag-handle {
+  width: 14px;
+  height: 24px;
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  color: var(--muted);
+  border-radius: 4px;
+  opacity: 0.35;
+  transition: opacity 0.15s;
+}
+.drag-handle:active { cursor: grabbing; }
+.row:hover .drag-handle, .row:focus-within .drag-handle { opacity: 1; }
+.drag-handle.ph { cursor: default; opacity: 0 !important; pointer-events: none; }
+.drag-handle .ico svg { width: 13px; height: 13px; }
+body.note .row:not(:hover):not(:focus-within) .drag-handle { opacity: 0; }
+
 .twisty {
   width: 20px; height: 24px; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
@@ -273,10 +298,23 @@ button.twisty:hover { background: var(--hover); }
   border-radius: 50%;
   background: transparent;
   color: #fff;
+  transition: width 0.15s ease, margin 0.15s ease, opacity 0.15s ease, border-width 0.15s ease;
 }
 .check:hover { border-color: var(--accent); }
 .check.done { background: var(--accent); border-color: var(--accent); }
 .check .ico svg { width: 12px; height: 12px; }
+
+body.note .row:not(:focus-within) .check {
+  width: 0;
+  height: 20px;
+  margin-left: 0;
+  margin-right: 0;
+  padding: 0;
+  border-width: 0;
+  opacity: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
 
 .row-main { flex: 1; min-width: 0; }
 .task-text {

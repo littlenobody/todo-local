@@ -18,11 +18,23 @@
   let listRendering = false; // 重建列表期间，忽略被移除输入框触发的 blur
   const doneOpen = new Set(); // 已展开的“已完成”分组
   let saveTimer = null;
+  let draggingTaskId = null;
+  let currentDropRow = null;
+  let currentDropPlacement = null;
 
   const short = (t) => TL.taskLabel(t, 18);
   const nodeOf = (id) => document.querySelector(`.node[data-id="${CSS.escape(id)}"]`);
   const getPredicate = () => TL.andPredicates(TL.makeTagPredicate(filter), TL.makeSearchPredicate(searchText));
   const isComposing = (e) => e.isComposing || e.keyCode === 229;
+
+  function clearDropIndicators() {
+    if (currentDropRow) {
+      currentDropRow.classList.remove('drop-before', 'drop-after', 'drop-inside');
+      currentDropRow = null;
+    }
+    currentDropPlacement = null;
+    document.querySelectorAll('.node.is-dragging').forEach((el) => el.classList.remove('is-dragging'));
+  }
 
   /* ---------- 保存 ---------- */
   function commit(immediate) {
@@ -68,7 +80,7 @@
   }
   function setNoteMode(note) {
     state.settings.noteMode = note;
-    document.body.classList.remove('drawer-open');
+    document.body.classList.remove('drawer-open', 'show-search');
     applyMode();
     renderAll();
     commit(true);
@@ -381,6 +393,30 @@
     const hasKids = t.children.length > 0;
     const expanded = filtering || !t.collapsed;
 
+    const dragHandle = el(
+      'span',
+      {
+        class: 'drag-handle',
+        title: '拖动排序',
+        'aria-label': '拖动排序',
+        draggable: 'true',
+      },
+      icon('drag')
+    );
+    dragHandle.addEventListener('dragstart', (e) => {
+      draggingTaskId = t.id;
+      e.dataTransfer.setData('text/plain', t.id);
+      e.dataTransfer.effectAllowed = 'move';
+      const nodeEl = nodeOf(t.id);
+      if (nodeEl) {
+        setTimeout(() => nodeEl.classList.add('is-dragging'), 0);
+      }
+    });
+    dragHandle.addEventListener('dragend', () => {
+      clearDropIndicators();
+      draggingTaskId = null;
+    });
+
     const twisty = hasKids
       ? el(
           'button',
@@ -443,7 +479,8 @@
 
     const row = el(
       'div',
-      { class: 'row' + (t.done ? ' is-done' : '') + (node.match ? (getPredicate() ? ' hit' : '') : ' dim') },
+      { class: 'row' + (t.done ? ' is-done' : '') + (node.match ? (getPredicate() ? ' hit' : '') : ' dim'), dataset: { id: t.id } },
+      dragHandle,
       twisty,
       check,
       el('div', { class: 'row-main' }, text, buildMeta(t)),
@@ -454,6 +491,65 @@
         iconBtn('trash', '删除任务', () => deleteTask(project, t), undefined, 'del')
       )
     );
+
+    row.addEventListener('dragover', (e) => {
+      if (!draggingTaskId || draggingTaskId === t.id) return;
+      const sourceInfo = TL.findInState(state, draggingTaskId);
+      if (sourceInfo && TL.findPath(sourceInfo.task.children, t.id)) return;
+
+      e.preventDefault();
+      e.dataTransfer.dropEffect = 'move';
+
+      const rect = row.getBoundingClientRect();
+      const relY = e.clientY - rect.top;
+      const h = rect.height;
+      let placement = 'after';
+      if (relY < h * 0.35) {
+        placement = 'before';
+      } else if (relY > h * 0.65) {
+        placement = 'after';
+      } else {
+        if (e.clientX - rect.left > 32) {
+          placement = 'inside';
+        } else {
+          placement = relY < h * 0.5 ? 'before' : 'after';
+        }
+      }
+
+      if (currentDropRow && currentDropRow !== row) {
+        currentDropRow.classList.remove('drop-before', 'drop-after', 'drop-inside');
+      }
+      currentDropRow = row;
+      currentDropPlacement = placement;
+      row.classList.toggle('drop-before', placement === 'before');
+      row.classList.toggle('drop-after', placement === 'after');
+      row.classList.toggle('drop-inside', placement === 'inside');
+    });
+
+    row.addEventListener('dragleave', (e) => {
+      if (row.contains(e.relatedTarget)) return;
+      if (currentDropRow === row) {
+        row.classList.remove('drop-before', 'drop-after', 'drop-inside');
+        currentDropRow = null;
+        currentDropPlacement = null;
+      }
+    });
+
+    row.addEventListener('drop', (e) => {
+      e.preventDefault();
+      const sourceId = draggingTaskId || e.dataTransfer.getData('text/plain');
+      const placement = currentDropPlacement;
+      clearDropIndicators();
+      draggingTaskId = null;
+      if (!sourceId || sourceId === t.id || !placement) return;
+
+      const ok = TL.moveTaskInState(state, sourceId, t.id, placement);
+      if (ok) {
+        commit();
+        renderAll();
+      }
+    });
+
     return row;
   }
 
@@ -632,11 +728,23 @@
   function buildAddBox(project) {
     const box = el('div', { class: 'add-box' });
 
-    const submit = () => {
+    const submit = (fromBlur = false) => {
+      if (!composer) return;
       const parsed = TL.parseQuickInput(composer.text);
-      if (!parsed.text && !parsed.tags.length) return;
-      composer = { pid: project.id, text: '' };
-      composerFocus = true; // 添加后保持展开，方便连续输入
+      if (!parsed.text && !parsed.tags.length) {
+        if (fromBlur) {
+          composer = null;
+          paint();
+        }
+        return;
+      }
+      if (fromBlur) {
+        composer = null;
+        composerFocus = false;
+      } else {
+        composer = { pid: project.id, text: '' };
+        composerFocus = true; // Ctrl+Enter 添加后保持展开，方便连续输入
+      }
       addTask(project, null, parsed);
     };
 
@@ -658,6 +766,7 @@
                 ta.scrollIntoView({ block: 'nearest' });
               },
             },
+            el('span', { class: 'drag-handle ph' }),
             el('span', { class: 'twisty ph' }),
             el('span', { class: 'check add' }, icon('plus')),
             el('span', { class: 'add-label', text: '添加任务' })
@@ -683,7 +792,7 @@
         if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
           e.preventDefault();
           composer.text = ta.value;
-          submit();
+          submit(false);
         } else if (e.key === 'Escape') {
           e.preventDefault();
           composer = null;
@@ -692,15 +801,14 @@
       });
       ta.addEventListener('blur', () => {
         if (listRendering || !composer || composer.pid !== project.id) return;
-        if (!ta.value.trim()) {
-          composer = null;
-          paint();
-        }
+        composer.text = ta.value;
+        submit(true);
       });
       box.replaceChildren(
         el(
           'div',
           { class: 'row add-row' },
+          el('span', { class: 'drag-handle ph' }),
           el('span', { class: 'twisty ph' }),
           el('span', { class: 'check add' }, icon('plus')),
           el(
@@ -710,8 +818,7 @@
             el(
               'div',
               { class: 'add-hint' },
-              el('span', { text: 'Ctrl+Enter 添加 · Esc 取消' }),
-              el('button', { class: 'btn small primary', type: 'button', onclick: submit }, '添加')
+              el('span', { text: '失焦自动保存 · Ctrl+Enter 继续添加 · Esc 取消' })
             )
           )
         )
@@ -762,26 +869,35 @@
   }
 
   function buildSubForm(t, project) {
-    const input = el('input', { class: 'sub-input', type: 'text', maxlength: '200', placeholder: '子任务，回车添加，Esc 结束', 'aria-label': `为「${short(t)}」添加子任务` });
+    const input = el('input', { class: 'sub-input', type: 'text', maxlength: '200', placeholder: '子任务，回车或失焦添加，Esc 结束', 'aria-label': `为「${short(t)}」添加子任务` });
     const form = el('form', { class: 'sub-form', autocomplete: 'off' }, input);
+    let handled = false;
+    const saveSub = () => {
+      if (handled) return;
+      handled = true;
+      const parsed = TL.parseQuickInput(input.value);
+      if (!parsed.text && !parsed.tags.length) {
+        if (addingSub === t.id) addingSub = null;
+        renderList();
+        return;
+      }
+      addingSub = null;
+      addTask(project, t, parsed);
+    };
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const parsed = TL.parseQuickInput(input.value);
-      if (!parsed.text && !parsed.tags.length) return;
-      pendingFocus = { id: t.id, sel: '.sub-form .sub-input' };
-      addTask(project, t, parsed);
+      saveSub();
     });
     input.addEventListener('keydown', (e) => {
       if (e.key === 'Escape' && !isComposing(e)) {
+        handled = true;
         addingSub = null;
         renderList();
       }
     });
     input.addEventListener('blur', () => {
-      if (!input.value.trim()) {
-        if (addingSub === t.id) addingSub = null;
-        form.remove();
-      }
+      if (listRendering || handled) return;
+      saveSub();
     });
     return form;
   }
@@ -943,6 +1059,10 @@
     const body = el(
       'div',
       {},
+      switchRow('开机自启动', '计算机开机登录后自动启动待办清单', s.autoStart, (v) => {
+        s.autoStart = v;
+        commit();
+      }),
       switchRow('便笺模式', '小窗口、隐藏托盘图标、窗口层级较低', s.noteMode, (v) => {
         closeModal();
         setNoteMode(v);
@@ -1069,15 +1189,22 @@
       }, 120);
     });
     search.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape' && !isComposing(e) && search.value) {
-        e.preventDefault();
-        $('#search-clear').click();
+      if (e.key === 'Escape' && !isComposing(e)) {
+        if (search.value) {
+          e.preventDefault();
+          $('#search-clear').click();
+        } else if (state.settings.noteMode) {
+          e.preventDefault();
+          document.body.classList.remove('show-search');
+          search.blur();
+        }
       }
     });
     $('#search-clear').addEventListener('click', () => {
       search.value = '';
       searchText = '';
       $('#search-clear').hidden = true;
+      if (state.settings.noteMode) document.body.classList.remove('show-search');
       renderList();
       search.focus();
     });
@@ -1094,6 +1221,9 @@
     document.addEventListener('keydown', (e) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
         e.preventDefault();
+        if (state.settings.noteMode) {
+          document.body.classList.add('show-search');
+        }
         search.focus();
         search.select();
       }

@@ -24,5 +24,6 @@
     inbox: wrap('<path d="M4 13l2-8h12l2 8v6H4zM4 13h5l1 2h4l1-2h5"/>'),
     edit: wrap('<path d="M4 20l1-4L16 5l3 3L8 19z"/>'),
     sub: wrap('<path d="M6 4v9a3 3 0 0 0 3 3h8M14 12l4 4-4 4"/>'),
+    drag: wrap('<circle cx="9" cy="6" r="1.2" fill="currentColor"/><circle cx="9" cy="12" r="1.2" fill="currentColor"/><circle cx="9" cy="18" r="1.2" fill="currentColor"/><circle cx="15" cy="6" r="1.2" fill="currentColor"/><circle cx="15" cy="12" r="1.2" fill="currentColor"/><circle cx="15" cy="18" r="1.2" fill="currentColor"/>'),
   };
 })();

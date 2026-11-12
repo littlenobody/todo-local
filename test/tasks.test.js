@@ -223,3 +223,81 @@ test('countOpen / countOverdue / collectTags', () => {
   assert.equal(tags.get('x').count, 2);
   assert.equal(tags.get('y').count, 1);
 });
+
+test('moveTask: 同级排序 (before / after)', () => {
+  const a = mk('a');
+  const b = mk('b');
+  const c = mk('c');
+  const tasks = [a, b, c];
+
+  // 将 c 移到 a 之前 -> [c, a, b]
+  assert.equal(TL.moveTask(tasks, c.id, a.id, 'before'), true);
+  assert.deepEqual(names(tasks), ['c', 'a', 'b']);
+
+  // 将 c 移到 b 之后 -> [a, b, c]
+  assert.equal(TL.moveTask(tasks, c.id, b.id, 'after'), true);
+  assert.deepEqual(names(tasks), ['a', 'b', 'c']);
+
+  // 将 a 移到 b 之后 -> [b, a, c]
+  assert.equal(TL.moveTask(tasks, a.id, b.id, 'after'), true);
+  assert.deepEqual(names(tasks), ['b', 'a', 'c']);
+});
+
+test('moveTask: 拖入成为子任务 (inside) 与跨层级拖出', () => {
+  const a = mk('a');
+  const b = mk('b');
+  const tasks = [a, b];
+
+  // b 移入 a 作为子任务
+  assert.equal(TL.moveTask(tasks, b.id, a.id, 'inside'), true);
+  assert.deepEqual(names(tasks), ['a']);
+  assert.deepEqual(names(a.children), ['b']);
+
+  // 将 b 拖回到根层级 a 之前
+  assert.equal(TL.moveTask(tasks, b.id, a.id, 'before'), true);
+  assert.deepEqual(names(tasks), ['b', 'a']);
+  assert.deepEqual(names(a.children), []);
+});
+
+test('moveTask: 非法操作防护（移动到自身或自身子孙）', () => {
+  const sub = mk('sub');
+  const a = mk('a', { children: [sub] });
+  const b = mk('b');
+  const tasks = [a, b];
+
+  // 不能移到自身
+  assert.equal(TL.moveTask(tasks, a.id, a.id, 'before'), false);
+  // 不能移到自身子孙
+  assert.equal(TL.moveTask(tasks, a.id, sub.id, 'inside'), false);
+  assert.equal(TL.moveTask(tasks, a.id, sub.id, 'after'), false);
+  // 无效 id
+  assert.equal(TL.moveTask(tasks, 'not-exist', b.id, 'before'), false);
+  assert.equal(TL.moveTask(tasks, a.id, 'not-exist', 'before'), false);
+});
+
+test('autoStart 配置项默认值与规范化', () => {
+  const def = TL.normalizeSettings(null);
+  assert.equal(def.autoStart, false);
+
+  const custom = TL.normalizeSettings({ autoStart: true });
+  assert.equal(custom.autoStart, true);
+
+  const invalid = TL.normalizeSettings({ autoStart: 'not-bool' });
+  assert.equal(invalid.autoStart, false);
+});
+
+test('moveTaskInState: 跨项目或项目内拖动', () => {
+  const p1 = TL.createProject('P1', 0);
+  const p2 = TL.createProject('P2', 1);
+  const t1 = mk('t1');
+  const t2 = mk('t2');
+  const t3 = mk('t3');
+  p1.tasks = [t1, t2];
+  p2.tasks = [t3];
+  const state = { projects: [p1, p2] };
+
+  // 将 t3 移动到 t1 之后
+  assert.equal(TL.moveTaskInState(state, t3.id, t1.id, 'after'), true);
+  assert.deepEqual(names(p1.tasks), ['t1', 't3', 't2']);
+  assert.deepEqual(names(p2.tasks), []);
+});

@@ -14,6 +14,7 @@
     noteSendToBottom: true, // 便笺模式窗口层级较低
     noteOpacity: 0.95,
     remindLeadMinutes: 0, // 提前提醒分钟数
+    autoStart: false, // 开机自启
   });
 
   const PROJECT_COLORS = ['#4f7cff', '#ef6c57', '#2fb67c', '#e0a526', '#9b6bdf', '#e0589b', '#2aa5c7'];
@@ -216,6 +217,7 @@
       noteSendToBottom: bool(r.noteSendToBottom, d.noteSendToBottom),
       noteOpacity: Number.isFinite(r.noteOpacity) ? clamp(r.noteOpacity, 0.4, 1) : d.noteOpacity,
       remindLeadMinutes: Number.isFinite(r.remindLeadMinutes) ? clamp(Math.round(r.remindLeadMinutes), 0, 1440) : d.remindLeadMinutes,
+      autoStart: bool(r.autoStart, d.autoStart),
     };
   }
 
@@ -262,6 +264,78 @@
     if (!path) return null;
     const { siblings, index } = path[path.length - 1];
     return siblings.splice(index, 1)[0];
+  }
+
+  /**
+   * 移动任务。
+   * placement: 'before' | 'after' | 'inside'
+   */
+  function moveTask(tasks, sourceId, targetId, placement) {
+    if (!sourceId || !targetId || sourceId === targetId) return false;
+    const sourcePath = findPath(tasks, sourceId);
+    if (!sourcePath) return false;
+    const sourceTask = sourcePath[sourcePath.length - 1].task;
+
+    if (findPath(sourceTask.children, targetId)) return false;
+
+    const targetPath = findPath(tasks, targetId);
+    if (!targetPath) return false;
+    const targetInfo = targetPath[targetPath.length - 1];
+    const targetTask = targetInfo.task;
+
+    const sourceSiblings = sourcePath[sourcePath.length - 1].siblings;
+    const sIndex = sourceSiblings.indexOf(sourceTask);
+    if (sIndex < 0) return false;
+    sourceSiblings.splice(sIndex, 1);
+
+    if (placement === 'inside') {
+      targetTask.children.push(sourceTask);
+      targetTask.collapsed = false;
+      return true;
+    }
+
+    const targetSiblings = targetInfo.siblings;
+    const tIndex = targetSiblings.indexOf(targetTask);
+    if (tIndex < 0) {
+      sourceSiblings.splice(sIndex, 0, sourceTask);
+      return false;
+    }
+
+    const insertIndex = placement === 'before' ? tIndex : tIndex + 1;
+    targetSiblings.splice(insertIndex, 0, sourceTask);
+    return true;
+  }
+
+  function moveTaskInState(state, sourceId, targetId, placement) {
+    if (!sourceId || !targetId || sourceId === targetId) return false;
+    const sourceFound = findInState(state, sourceId);
+    const targetFound = findInState(state, targetId);
+    if (!sourceFound || !targetFound) return false;
+
+    const sourceTask = sourceFound.task;
+    if (findPath(sourceTask.children, targetId)) return false;
+
+    const sourceSiblings = sourceFound.path[sourceFound.path.length - 1].siblings;
+    const sIndex = sourceSiblings.indexOf(sourceTask);
+    if (sIndex < 0) return false;
+    sourceSiblings.splice(sIndex, 1);
+
+    if (placement === 'inside') {
+      targetFound.task.children.push(sourceTask);
+      targetFound.task.collapsed = false;
+      return true;
+    }
+
+    const targetSiblings = targetFound.path[targetFound.path.length - 1].siblings;
+    const tIndex = targetSiblings.indexOf(targetFound.task);
+    if (tIndex < 0) {
+      sourceSiblings.splice(sIndex, 0, sourceTask);
+      return false;
+    }
+
+    const insertIndex = placement === 'before' ? tIndex : tIndex + 1;
+    targetSiblings.splice(insertIndex, 0, sourceTask);
+    return true;
   }
 
   function markSubtree(task, done, now) {
@@ -443,6 +517,8 @@
     findInState,
     walk,
     removeTask,
+    moveTask,
+    moveTaskInState,
     insertTask,
     setDone,
     countOpen,
