@@ -129,6 +129,8 @@ test('normalizeState：默认值、修复坏数据', () => {
   const s = TL.normalizeState(null);
   assert.equal(s.settings.noteMode, true); // 默认便笺模式
   assert.equal(s.settings.completedToBottom, true); // 默认开启完成置底
+  assert.equal(s.settings.noteAlwaysOnTop, false); // 置顶默认关闭
+  assert.equal(s.settings.noteEdgeDock, true);
   assert.equal(s.projects.length, 1);
   assert.equal(s.ui.view, s.projects[0].id);
 

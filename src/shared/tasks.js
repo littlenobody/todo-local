@@ -12,6 +12,8 @@
     noteMode: true, // 默认便笺模式
     completedToBottom: true, // 完成后置底并收起到“已完成”（默认开启）
     noteSendToBottom: true, // 便笺模式窗口层级较低
+    noteAlwaysOnTop: false, // 便笺模式窗口置顶显示（优先于“置于底层”）
+    noteEdgeDock: true, // 便笺拖到屏幕边缘后缩起，鼠标移过去再展开
     noteOpacity: 0.95,
     remindLeadMinutes: 0, // 提前提醒分钟数
     autoStart: false, // 开机自启
@@ -215,6 +217,8 @@
       noteMode: bool(r.noteMode, d.noteMode),
       completedToBottom: bool(r.completedToBottom, d.completedToBottom),
       noteSendToBottom: bool(r.noteSendToBottom, d.noteSendToBottom),
+      noteAlwaysOnTop: bool(r.noteAlwaysOnTop, d.noteAlwaysOnTop),
+      noteEdgeDock: bool(r.noteEdgeDock, d.noteEdgeDock),
       noteOpacity: Number.isFinite(r.noteOpacity) ? clamp(r.noteOpacity, 0.4, 1) : d.noteOpacity,
       remindLeadMinutes: Number.isFinite(r.remindLeadMinutes) ? clamp(Math.round(r.remindLeadMinutes), 0, 1440) : d.remindLeadMinutes,
       autoStart: bool(r.autoStart, d.autoStart),

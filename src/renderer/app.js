@@ -8,6 +8,9 @@
   let state = null;
   let dataDir = '';
   let shortcut = '';
+  let updateStatus = null;
+  let appVersion = '';
+  let updateToasted = '';
   let searchText = '';
   const filter = { include: [], exclude: [], mode: 'and' }; // 标签键均为小写
   let tagbarOpen = false;
@@ -108,6 +111,11 @@
     const closeLabel = note ? '退出程序' : '隐藏到系统托盘';
     $('#btn-close').title = closeLabel;
     $('#btn-close').setAttribute('aria-label', closeLabel);
+    const pinned = !!state.settings.noteAlwaysOnTop;
+    const pin = $('#btn-pin');
+    pin.setAttribute('aria-pressed', String(pinned));
+    pin.title = pinned ? '取消置顶' : '置顶显示';
+    pin.setAttribute('aria-label', pin.title);
   }
 
   function renderSidebar() {
@@ -231,9 +239,11 @@
       );
     });
     bar.replaceChildren(
-      head,
-      tags.length ? el('div', { class: 'tagbar-chips' }, chips) : el('div', { class: 'empty small', text: '还没有标签，在任务详情里添加' }),
-      tags.length ? el('p', { class: 'tagbar-hint', text: '点击标签切换：包含 → 排除 → 取消' }) : null
+      ...[
+        head,
+        tags.length ? el('div', { class: 'tagbar-chips' }, chips) : el('div', { class: 'empty small', text: '还没有标签，在任务详情里添加' }),
+        tags.length ? el('p', { class: 'tagbar-hint', text: '点击标签切换：包含 → 排除 → 取消' }) : null,
+      ].filter(Boolean) // 原生 replaceChildren 会把 null 变成文字 "null"
     );
   }
 
@@ -1039,6 +1049,71 @@
     );
   }
 
+  /* ---------- 软件更新 ---------- */
+  /** 说明文字始终以当前版本号开头，后面跟检查 / 下载状态 */
+  function updateText(u) {
+    const cur = `当前版本 v${u.current || appVersion}`;
+    switch (u.state) {
+      case 'checking':
+        return `${cur}，正在检查更新…`;
+      case 'uptodate':
+        return `${cur}，已是最新`;
+      case 'downloading':
+        return `${cur}，正在下载 v${u.version}（${u.percent || 0}%）`;
+      case 'ready':
+        return `${cur}，v${u.version} 已下载完成，可以安装`;
+      case 'error':
+        return `${cur}，检查更新失败：${u.message}`;
+      default:
+        return cur;
+    }
+  }
+
+  /** 设置里的“软件更新”一行；状态变化时原地刷新 */
+  function renderUpdateRow() {
+    const row = document.getElementById('update-row');
+    if (!row) return;
+    const u = updateStatus || { state: 'idle', current: appVersion };
+    const busy = u.state === 'checking' || u.state === 'downloading';
+    const ready = u.state === 'ready';
+    row.replaceChildren(
+      el('span', { class: 'setting-text' }, el('span', { text: '软件更新' }), el('span', { class: 'setting-desc', text: updateText(u) })),
+      el(
+        'button',
+        {
+          class: ready ? 'btn primary' : 'btn',
+          type: 'button',
+          disabled: busy,
+          onclick: () => {
+            if (ready) {
+              flush();
+              api.installUpdate();
+            } else {
+              api.checkUpdate();
+            }
+          },
+        },
+        ready ? '重启并安装' : busy ? '请稍候' : '检查更新'
+      )
+    );
+  }
+
+  function onUpdateStatus(u) {
+    updateStatus = u;
+    renderUpdateRow();
+    if (u && u.state === 'ready' && updateToasted !== u.version) {
+      updateToasted = u.version;
+      toast(`新版本 v${u.version} 已下载完成`, {
+        action: '重启并安装',
+        timeout: 15000,
+        onAction: () => {
+          flush();
+          api.installUpdate();
+        },
+      });
+    }
+  }
+
   function openSettings() {
     const s = state.settings;
     const opacity = el('input', { type: 'range', min: '0.4', max: '1', step: '0.05', 'aria-label': '便笺透明度' });
@@ -1076,6 +1151,15 @@
         s.noteSendToBottom = v;
         commit();
       }),
+      switchRow('便笺置顶显示', '始终显示在其他窗口上面；开启后“置于底层”不生效', s.noteAlwaysOnTop, (v) => {
+        s.noteAlwaysOnTop = v;
+        commit();
+        renderTitlebar();
+      }),
+      switchRow('便笺贴边收起', '拖到屏幕左、右、上边缘后自动缩起，鼠标移到边缘再展开', s.noteEdgeDock, (v) => {
+        s.noteEdgeDock = v;
+        commit();
+      }),
       el('div', { class: 'setting' }, el('span', { class: 'setting-text' }, el('span', { text: '便笺透明度' })), opacity),
       el(
         'div',
@@ -1083,6 +1167,7 @@
         el('label', { class: 'setting-text', for: 'lead-min' }, el('span', { text: '提前提醒（分钟）' }), el('span', { class: 'setting-desc', text: '0 表示到点才提醒' })),
         lead
       ),
+      el('div', { class: 'setting', id: 'update-row' }),
       el(
         'div',
         { class: 'settings-foot' },
@@ -1110,6 +1195,7 @@
     );
     lead.id = 'lead-min';
     openModal({ title: '设置', body, actions: null });
+    renderUpdateRow();
   }
 
   /* ---------- 其他 ---------- */
@@ -1151,6 +1237,7 @@
     const set = (sel, name) => $(sel).prepend(icon(name));
     set('#btn-drawer', 'menu');
     set('#btn-settings', 'sliders');
+    set('#btn-pin', 'pin');
     set('#btn-min', 'minimize');
     set('#btn-max', 'maximize');
     set('#btn-close', 'close');
@@ -1162,6 +1249,11 @@
     $('#btn-drawer').addEventListener('click', () => document.body.classList.toggle('drawer-open'));
     $('#scrim').addEventListener('click', () => document.body.classList.remove('drawer-open'));
     $('#btn-mode').addEventListener('click', () => setNoteMode(!state.settings.noteMode));
+    $('#btn-pin').addEventListener('click', () => {
+      state.settings.noteAlwaysOnTop = !state.settings.noteAlwaysOnTop;
+      renderTitlebar();
+      commit(true);
+    });
     $('#btn-settings').addEventListener('click', openSettings);
     $('#btn-min').addEventListener('click', () => api.minimize());
     $('#btn-max').addEventListener('click', () => api.toggleMaximize());
@@ -1257,6 +1349,9 @@
     state = res.state;
     dataDir = res.dataDir;
     shortcut = res.shortcut || '';
+    appVersion = res.version || '';
+    api.onUpdateStatus(onUpdateStatus);
+    api.getUpdateStatus().then(onUpdateStatus);
     bindStatic();
     applyMode();
     renderAll();

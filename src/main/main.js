@@ -7,6 +7,8 @@ const TaskLib = require('../shared/tasks.js');
 const { Reminders } = require('./reminders');
 const { sendToBottom } = require('./zorder');
 const { createWindowIcon, createTrayIcon } = require('./icon');
+const { createUpdater } = require('./updater');
+const { createEdgeDock } = require('./edge-dock');
 
 const MIN_W = 280;
 const MIN_H = 320;
@@ -17,6 +19,7 @@ let activeShortcut = '';
 let win = null;
 let tray = null;
 let reminders = null;
+let updater = null;
 let state = null;
 let winPrefs = {};
 let dataDir = '';
@@ -30,6 +33,18 @@ const liveNotifications = new Set();
 
 const isNote = () => !!state.settings.noteMode;
 const alive = () => win && !win.isDestroyed();
+
+/** 便笺贴边收起：仅在便笺模式且开启该设置时生效 */
+const edgeDock = createEdgeDock({
+  screen,
+  getWin: () => win,
+  isActive: () => !!state && !!win && isNote() && !!state.settings.noteEdgeDock,
+  onChange: () => applyLayer(),
+});
+
+/** 失去焦点后是否应把便笺沉到底层（置顶、缩在边缘时都不能沉） */
+const shouldSink = () =>
+  isNote() && !!state.settings.noteSendToBottom && !state.settings.noteAlwaysOnTop && !edgeDock.isCollapsed();
 
 /* ---------- 数据持久化 ---------- */
 
@@ -86,7 +101,9 @@ function resolveBounds(mode) {
 
 function saveWinPrefs(mode) {
   if (!alive() || win.isMinimized() || win.isFullScreen()) return;
-  winPrefs[mode] = win.getNormalBounds();
+  // 便笺缩在屏幕边缘时，保存展开后的位置；缩起来的位置下次启动会被当成“在屏幕外”而丢弃
+  const rest = edgeDock.restBounds();
+  winPrefs[mode] = rest ? { ...win.getNormalBounds(), x: rest.x, y: rest.y } : win.getNormalBounds();
   try {
     writeJsonAtomic(windowFile, winPrefs, false);
   } catch {
@@ -100,6 +117,7 @@ function showWindow() {
   if (!alive()) return;
   if (win.isMinimized()) win.restore();
   win.show();
+  edgeDock.expand();
   win.moveTop();
   win.focus();
 }
@@ -107,8 +125,11 @@ function showWindow() {
 function toggleWindow() {
   if (!alive()) return;
   if (win.isVisible() && !win.isMinimized() && win.isFocused()) {
-    if (isNote()) sendToBottom(win);
-    else win.hide();
+    if (isNote()) {
+      // 置顶的窗口沉不下去，改为最小化到任务栏
+      if (state.settings.noteAlwaysOnTop) win.minimize();
+      else sendToBottom(win);
+    } else win.hide();
   } else {
     showWindow();
   }
@@ -135,14 +156,25 @@ function destroyTray() {
   tray = null;
 }
 
-/** 根据当前模式应用窗口特性：透明度、托盘图标（便笺模式保留任务栏项，否则不会出现在 alt+tab 中） */
+/**
+ * 窗口层级：便笺模式下，设置了置顶，或缩在屏幕边缘时（否则露出的那一条会被别的窗口盖住）保持置顶。
+ * 其余情况交给失焦时的“沉到底层”逻辑。
+ */
+function applyLayer() {
+  if (!alive()) return;
+  win.setAlwaysOnTop(isNote() && (!!state.settings.noteAlwaysOnTop || edgeDock.isCollapsed()));
+}
+
+/** 根据当前模式应用窗口特性：透明度、层级、贴边、托盘图标（便笺模式保留任务栏项，否则不会出现在 alt+tab 中） */
 function applyTraits() {
   if (!alive()) return;
   const note = isNote();
   win.setMaximizable(!note);
   win.setOpacity(note ? state.settings.noteOpacity : 1);
+  applyLayer();
   if (note) destroyTray();
   else createTray();
+  edgeDock.refresh();
 }
 
 function applyAutoStart(enable) {
@@ -161,11 +193,16 @@ function onSettingsChanged(prev) {
   const cur = state.settings;
   if (cur.noteMode !== prev.noteMode) {
     saveWinPrefs(prev.noteMode ? 'note' : 'normal');
+    edgeDock.release(); // 先把缩在边缘的窗口放回去，再换到另一种模式的位置
     if (win.isMaximized()) win.unmaximize();
     win.setBounds(resolveBounds(cur.noteMode ? 'note' : 'normal'));
     applyTraits();
     showWindow();
-  } else if (cur.noteOpacity !== prev.noteOpacity) {
+  } else if (
+    cur.noteOpacity !== prev.noteOpacity ||
+    cur.noteAlwaysOnTop !== prev.noteAlwaysOnTop ||
+    cur.noteEdgeDock !== prev.noteEdgeDock
+  ) {
     applyTraits();
   }
   if (cur.autoStart !== prev.autoStart) {
@@ -209,7 +246,7 @@ function createWindow(firstRun) {
 
   win.once('ready-to-show', () => {
     applyTraits();
-    if (isNote() && !firstRun && state.settings.noteSendToBottom) {
+    if (isNote() && !firstRun && shouldSink()) {
       // 便笺模式启动时直接沉到底层，不抢焦点
       win.showInactive();
       sendToBottom(win);
@@ -219,9 +256,9 @@ function createWindow(firstRun) {
   });
 
   win.on('blur', () => {
-    if (!isNote() || !state.settings.noteSendToBottom) return;
+    if (!shouldSink()) return;
     setTimeout(() => {
-      if (alive() && isNote() && !win.isFocused()) sendToBottom(win);
+      if (alive() && shouldSink() && !win.isFocused()) sendToBottom(win);
     }, 120);
   });
 
@@ -231,6 +268,9 @@ function createWindow(firstRun) {
   };
   win.on('resize', onBounds);
   win.on('move', onBounds);
+  // 拖动 / 缩放结束后判断是否贴到了屏幕边缘（Windows 上 moved、resized 只在操作结束时触发）
+  win.on('moved', () => edgeDock.refresh());
+  win.on('resized', () => edgeDock.refresh());
 
   win.on('close', (e) => {
     saveWinPrefs(isNote() ? 'note' : 'normal');
@@ -241,6 +281,7 @@ function createWindow(firstRun) {
     win.hide();
   });
   win.on('closed', () => {
+    edgeDock.release();
     win = null;
   });
 }
@@ -274,6 +315,7 @@ function onDue(items) {
   if (alive() && isNote()) {
     if (!win.isVisible()) win.showInactive();
     win.moveTop();
+    edgeDock.expand(8000); // 缩在边缘时先展开，并保持一会儿，免得提醒还没看清就缩回去
   }
 }
 
@@ -302,7 +344,7 @@ function start() {
   const prefs = readJson(windowFile, {});
   winPrefs = prefs && typeof prefs === 'object' ? prefs : {};
 
-  ipcMain.handle('state:load', (e) => (alive() && e.sender === win.webContents ? { state, dataDir, shortcut: activeShortcut } : null));
+  ipcMain.handle('state:load', (e) => (alive() && e.sender === win.webContents ? { state, dataDir, shortcut: activeShortcut, version: app.getVersion() } : null));
   ipcMain.on('state:save', (e, incoming) => {
     if (!alive() || e.sender !== win.webContents) return;
     const prev = state.settings;
@@ -312,8 +354,10 @@ function start() {
   });
   ipcMain.on('win:minimize', () => {
     if (!alive()) return;
-    if (isNote()) sendToBottom(win);
-    else win.minimize();
+    if (isNote()) {
+      if (state.settings.noteAlwaysOnTop) win.minimize();
+      else sendToBottom(win);
+    } else win.minimize();
   });
   ipcMain.on('win:toggle-maximize', () => {
     if (!alive() || isNote()) return;
@@ -326,10 +370,31 @@ function start() {
   ipcMain.on('app:quit', () => app.quit());
   ipcMain.on('app:open-data-dir', () => shell.openPath(dataDir));
 
+  updater = createUpdater({
+    dir: path.join(dataDir, 'updates'),
+    onChange: (s) => {
+      if (alive()) win.webContents.send('update:status', s);
+    },
+    onInstall: () => app.quit(),
+  });
+  const fromWin = (e) => alive() && e.sender === win.webContents;
+  ipcMain.handle('update:status', (e) => (fromWin(e) ? updater.status() : null));
+  ipcMain.handle('update:check', (e) => (fromWin(e) ? updater.check().then(() => updater.status()) : null));
+  ipcMain.handle('update:install', (e) => fromWin(e) && updater.install());
+
   createWindow(firstRun);
+
+  // 显示器增减、分辨率或任务栏变化后，缩在边缘的窗口可能落到屏幕外：先放回，再按新布局重新判断
+  for (const ev of ['display-added', 'display-removed', 'display-metrics-changed']) {
+    screen.on(ev, () => {
+      edgeDock.release();
+      edgeDock.refresh();
+    });
+  }
 
   reminders = new Reminders({ getState: () => state, file: path.join(dataDir, 'reminded.json'), onDue });
   reminders.start();
+  updater.start();
 
   if (!registerShortcut()) {
     console.warn('[shortcut] 全局快捷键均注册失败（可能被其他程序占用），可通过再次启动程序找回窗口');
