@@ -47,7 +47,7 @@
       "installerIcon": "build/icon.ico",
       "uninstallerIcon": "build/icon.ico",
       "deleteAppDataOnUninstall": false,
-      "artifactName": "${productName}-安装包-${version}.${ext}"
+      "artifactName": "todo-local-setup-${version}.${ext}"
     }
   },
   "devDependencies": {
