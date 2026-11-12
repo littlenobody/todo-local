@@ -1,0 +1,25 @@
+# dependencies
+node_modules/
+
+# electron-builder output
+dist/
+
+# logs
+logs/
+*.log
+npm-debug.log*
+
+# local env and secrets
+.env
+.env.*
+
+# OS
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# editors
+.idea/
+.vscode/
+*.iml
+*.swp

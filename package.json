@@ -1,0 +1,60 @@
+{
+  "name": "todo-local",
+  "version": "1.0.0",
+  "description": "本地待办清单：项目 / 多级子任务 / 备注 / 标签过滤 / 到期提醒 / 便笺模式",
+  "main": "src/main/main.js",
+  "private": true,
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/*.test.js\"",
+    "icon": "node build/make-icon.js",
+    "dist": "electron-builder --win nsis --x64"
+  },
+  "build": {
+    "appId": "local.todo-local",
+    "productName": "待办清单",
+    "executableName": "todo-local",
+    "copyright": "todo-local",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "src/**/*",
+      "package.json"
+    ],
+    "asarUnpack": [
+      "**/node_modules/koffi/**/*.node"
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "待办清单",
+      "installerIcon": "build/icon.ico",
+      "uninstallerIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "${productName}-安装包-${version}.${ext}"
+    }
+  },
+  "devDependencies": {
+    "electron": "45.3.0",
+    "electron-builder": "26.18.0"
+  },
+  "optionalDependencies": {
+    "koffi": "3.3.7"
+  }
+}
