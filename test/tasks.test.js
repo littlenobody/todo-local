@@ -3,7 +3,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const TL = require('../src/shared/tasks.js');
 
-const mk = (title, extra) => TL.createTask(title, extra);
+// 任务没有标题，内容就是 note
+const mk = (note, extra) => TL.createTask(note, extra);
+const names = (list) => list.map((t) => t.note);
 
 test('完成任务：移到当前层级最后，并联动子孙', () => {
   const a = mk('a');
@@ -11,9 +13,9 @@ test('完成任务：移到当前层级最后，并联动子孙', () => {
   const c = mk('c');
   const tasks = [a, b, c];
   TL.setDone(tasks, a.id, true, { moveToBottom: true });
-  assert.deepEqual(tasks.map((t) => t.title), ['b', 'c', 'a']);
+  assert.deepEqual(names(tasks), ['b', 'c', 'a']);
   TL.setDone(tasks, b.id, true, { moveToBottom: true });
-  assert.deepEqual(tasks.map((t) => t.title), ['c', 'a', 'b']);
+  assert.deepEqual(names(tasks), ['c', 'a', 'b']);
   assert.ok(b.children.every((x) => x.done && x.doneAt));
 });
 
@@ -23,15 +25,15 @@ test('子任务完成只在其所在层级置底', () => {
   const b = mk('b', { children: [b1, b2] });
   const tasks = [b, mk('c')];
   TL.setDone(tasks, b1.id, true, { moveToBottom: true });
-  assert.deepEqual(b.children.map((t) => t.title), ['b2', 'b1']);
-  assert.deepEqual(tasks.map((t) => t.title), ['b', 'c']);
+  assert.deepEqual(names(b.children), ['b2', 'b1']);
+  assert.deepEqual(names(tasks), ['b', 'c']);
 });
 
 test('moveToBottom=false 时不移动', () => {
   const a = mk('a');
   const tasks = [a, mk('b')];
   TL.setDone(tasks, a.id, true, { moveToBottom: false });
-  assert.deepEqual(tasks.map((t) => t.title), ['a', 'b']);
+  assert.deepEqual(names(tasks), ['a', 'b']);
 });
 
 test('取消完成：回到未完成区末尾，祖先同步取消', () => {
@@ -45,16 +47,16 @@ test('取消完成：回到未完成区末尾，祖先同步取消', () => {
   TL.setDone(root, y.id, false, { moveToBottom: true });
   assert.equal(y.done, false);
   assert.equal(p.done, false);
-  assert.deepEqual(root.map((t) => t.title), ['q', 'p']);
+  assert.deepEqual(names(root), ['q', 'p']);
 });
 
 test('insertTask：保持已完成在底部', () => {
   const d = mk('d', { done: true });
   const list = [mk('a'), d];
   TL.insertTask(list, mk('n'), true);
-  assert.deepEqual(list.map((t) => t.title), ['a', 'n', 'd']);
+  assert.deepEqual(names(list), ['a', 'n', 'd']);
   TL.insertTask(list, mk('m'), false);
-  assert.equal(list[list.length - 1].title, 'm');
+  assert.equal(list[list.length - 1].note, 'm');
 });
 
 test('多级嵌套查找与删除', () => {
@@ -76,7 +78,7 @@ test('标签过滤：与 / 或 / 排除组合', () => {
   const t1 = mk('1', { tags: ['工作', '紧急'] });
   const t2 = mk('2', { tags: ['工作'] });
   const t3 = mk('3', { tags: ['生活'] });
-  const run = (f) => [t1, t2, t3].filter(TL.makeTagPredicate(f)).map((t) => t.title);
+  const run = (f) => names([t1, t2, t3].filter(TL.makeTagPredicate(f)));
   assert.deepEqual(run({ include: ['工作', '紧急'], exclude: [], mode: 'and' }), ['1']);
   assert.deepEqual(run({ include: ['紧急', '生活'], exclude: [], mode: 'or' }), ['1', '3']);
   assert.deepEqual(run({ include: ['工作'], exclude: ['紧急'], mode: 'and' }), ['2']);
@@ -95,14 +97,14 @@ test('filterTree：保留命中项的祖先链', () => {
   assert.equal(tree[0].children[0].match, true);
 });
 
-test('模糊搜索：标题/备注/标签、多关键字、子序列', () => {
-  const t = mk('Write quarterly report', { note: '给老板看', tags: ['work'] });
+test('模糊搜索：内容/标签、多关键字、首行子序列', () => {
+  const t = mk('Write quarterly report\n给老板看', { tags: ['work'] });
   const hit = (q) => !!TL.makeSearchPredicate(q)(t);
   assert.ok(hit('QUARTERLY'));
-  assert.ok(hit('老板'));
-  assert.ok(hit('work'));
+  assert.ok(hit('老板')); // 非首行内容也能搜到
+  assert.ok(hit('work')); // 标签
   assert.ok(hit('write report'));
-  assert.ok(hit('wqr')); // 子序列模糊
+  assert.ok(hit('wqr')); // 首行子序列模糊
   assert.ok(!hit('zzz'));
   assert.ok(!hit('write zzz'));
   assert.equal(TL.makeSearchPredicate('   '), null);
@@ -133,17 +135,80 @@ test('normalizeState：默认值、修复坏数据', () => {
   const bad = TL.normalizeState({
     settings: { noteMode: 'x', noteOpacity: 9, remindLeadMinutes: -5 },
     ui: { view: 'ghost' },
-    projects: [{ name: 'P', tasks: [{ title: 1, due: 'oops', tags: ['a', 'A'], children: [{ title: 'k' }] }] }],
+    projects: [{ name: 'P', tasks: [{ note: 1, due: 'oops', tags: ['a', 'A'], children: [{ note: 'k' }] }] }],
   });
   assert.equal(bad.settings.noteMode, true);
   assert.equal(bad.settings.noteOpacity, 1);
   assert.equal(bad.settings.remindLeadMinutes, 0);
   assert.equal(bad.ui.view, bad.projects[0].id);
   const t = bad.projects[0].tasks[0];
+  assert.equal(t.note, '');
   assert.equal(t.due, null);
   assert.deepEqual(t.tags, ['a']);
-  assert.equal(t.children[0].title, 'k');
+  assert.equal(t.children[0].note, 'k');
   assert.ok(t.id && t.children[0].id);
+});
+
+test('任务没有 title 字段', () => {
+  assert.ok(!('title' in mk('x')));
+  const s = TL.normalizeState({ projects: [{ name: 'P', tasks: [{ note: 'x' }] }] });
+  assert.ok(!('title' in s.projects[0].tasks[0]));
+});
+
+test('旧数据迁移：标题并入备注最前面', () => {
+  const s = TL.normalizeState({
+    projects: [
+      {
+        name: 'P',
+        tasks: [
+          { title: '买牛奶', note: '全脂\n两盒', children: [{ title: '只有标题' }, { note: '只有备注' }, { title: '  ', note: '  ' }] },
+          { title: '', note: '' },
+        ],
+      },
+    ],
+  });
+  const [a, b] = s.projects[0].tasks;
+  assert.equal(a.note, '买牛奶\n全脂\n两盒');
+  assert.deepEqual(names(a.children), ['只有标题', '只有备注', '  ']);
+  assert.ok(a.children.every((c) => !('title' in c)));
+  assert.equal(b.note, '');
+});
+
+test('迁移后再次规范化结果不变（幂等）', () => {
+  const once = TL.normalizeState({ projects: [{ name: 'P', tasks: [{ title: 'T', note: 'N' }] }] });
+  const twice = TL.normalizeState(JSON.parse(JSON.stringify(once)));
+  assert.equal(twice.projects[0].tasks[0].note, 'T\nN');
+});
+
+test('hasLegacyTitles：只在存在非空旧标题时为真', () => {
+  assert.equal(TL.hasLegacyTitles(null), false);
+  assert.equal(TL.hasLegacyTitles({ projects: [{ tasks: [{ title: '', note: 'x' }] }] }), false);
+  assert.equal(TL.hasLegacyTitles({ projects: [{ tasks: [{ note: 'x' }] }] }), false);
+  assert.equal(TL.hasLegacyTitles({ projects: [{ tasks: [{ title: 'a' }] }] }), true);
+  assert.equal(TL.hasLegacyTitles({ projects: [{ tasks: [{ note: 'x', children: [{ title: 'deep' }] }] }] }), true);
+});
+
+test('taskLabel：首个非空行 > 标签 > 占位', () => {
+  assert.equal(TL.taskLabel({ note: '\n  第一行   内容 \n第二行', tags: ['a'] }), '第一行 内容');
+  assert.equal(TL.taskLabel({ note: '', tags: ['a', 'b'] }), '#a #b');
+  assert.equal(TL.taskLabel({ note: '  ', tags: [] }), '（空白任务）');
+  assert.equal(TL.taskLabel({ note: '1234567890', tags: [] }, 5), '12345…');
+});
+
+test('parseQuickInput：提取 #标签、保留换行、整理空白', () => {
+  assert.deepEqual(TL.parseQuickInput('买牛奶 #生活 #采购'), { text: '买牛奶', tags: ['生活', '采购'] });
+  assert.deepEqual(TL.parseQuickInput('#只有标签'), { text: '', tags: ['只有标签'] });
+  assert.deepEqual(TL.parseQuickInput('   '), { text: '', tags: [] });
+  assert.deepEqual(TL.parseQuickInput(null), { text: '', tags: [] });
+  // 多行：换行保留，行内多余空格合并，行首尾空格去掉，连续空行最多一个
+  assert.equal(TL.parseQuickInput('  第一行   内容  \r\n\r\n\r\n\r\n  第二行 ').text, '第一行 内容\n\n第二行');
+  // 标签可以在任意一行；提取后不留空行的多余空格
+  assert.deepEqual(TL.parseQuickInput('第一行\n#工作 第二行'), { text: '第一行\n第二行', tags: ['工作'] });
+  assert.deepEqual(TL.parseQuickInput('第一行\n#工作\n第二行'), { text: '第一行\n\n第二行', tags: ['工作'] });
+  // 不是标签：#前面有非空白字符（如 C#）
+  assert.deepEqual(TL.parseQuickInput('学 C# 语法'), { text: '学 C# 语法', tags: [] });
+  // 标签去重（不区分大小写）
+  assert.deepEqual(TL.parseQuickInput('x #A #a #b').tags, ['A', 'b']);
 });
 
 test('countOpen / countOverdue / collectTags', () => {

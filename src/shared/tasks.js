@@ -99,12 +99,11 @@
 
   /* ---------- 规范化 ---------- */
 
-  function createTask(title, extra) {
+  function createTask(note, extra) {
     return Object.assign(
       {
         id: uid(),
-        title: String(title || '').trim(),
-        note: '',
+        note: String(note || '').trim(),
         done: false,
         doneAt: null,
         tags: [],
@@ -117,13 +116,60 @@
     );
   }
 
+  /** 任务已没有标题字段：旧数据里的 title 并到 note 最前面（单独成行） */
+  function mergeLegacyTitle(r) {
+    const title = typeof r.title === 'string' ? r.title.trim() : '';
+    const note = typeof r.note === 'string' ? r.note : '';
+    if (title && note.trim()) return `${title}\n${note}`;
+    return title || note;
+  }
+
+  /** 原始数据里是否还有带非空 title 的旧任务（用于迁移前备份） */
+  function hasLegacyTitles(raw) {
+    const check = (tasks) =>
+      Array.isArray(tasks) &&
+      tasks.some((t) => t && typeof t === 'object' && ((typeof t.title === 'string' && t.title.trim() !== '') || check(t.children)));
+    return !!(raw && Array.isArray(raw.projects) && raw.projects.some((p) => p && check(p.tasks)));
+  }
+
+  /** 给提醒、提示条用的简称：备注首个非空行；没有备注时用标签；都没有则返回占位文字 */
+  function taskLabel(task, max) {
+    const lines = String(task.note || '').split('\n');
+    let s = '';
+    for (const line of lines) {
+      s = line.replace(/\s+/g, ' ').trim();
+      if (s) break;
+    }
+    if (!s && Array.isArray(task.tags) && task.tags.length) s = task.tags.map((t) => '#' + t).join(' ');
+    if (!s) return '（空白任务）';
+    return max && s.length > max ? s.slice(0, max) + '…' : s;
+  }
+
+  /**
+   * 解析“添加任务”输入：提取 #标签（仅在开头或空白后，“C#”不算），保留换行。
+   * 行内连续空白合并为一个空格，去掉每行首尾空格，连续空行最多保留一个，整体去掉首尾空白。
+   */
+  function parseQuickInput(input) {
+    const tags = [];
+    const text = String(input == null ? '' : input)
+      .replace(/\r\n?/g, '\n')
+      .replace(/(^|\s)[#＃]([^\s#＃]+)/g, (_m, sp, tag) => {
+        tags.push(tag);
+        return sp;
+      })
+      .replace(/[^\S\n]+/g, ' ')
+      .replace(/ ?\n ?/g, '\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+    return { text, tags: uniqueTags(tags) };
+  }
+
   function normalizeTask(raw) {
     const r = raw && typeof raw === 'object' ? raw : {};
     const done = !!r.done;
     return {
       id: typeof r.id === 'string' && r.id ? r.id : uid(),
-      title: typeof r.title === 'string' ? r.title : '',
-      note: typeof r.note === 'string' ? r.note : '',
+      note: mergeLegacyTitle(r),
       done,
       doneAt: done && Number.isFinite(r.doneAt) ? r.doneAt : null,
       tags: uniqueTags(Array.isArray(r.tags) ? r.tags : []),
@@ -338,7 +384,7 @@
 
   /**
    * 关键字模糊搜索：空格分隔的每个关键字都要命中。
-   * 命中规则：在 标题/备注/标签 中包含；或（长度>=2）按字符顺序出现在标题中。
+   * 命中规则：在 内容/标签 中包含；或（长度>=2）按字符顺序出现在内容首行中。
    */
   function makeSearchPredicate(query) {
     const terms = String(query || '')
@@ -347,9 +393,10 @@
       .filter(Boolean);
     if (!terms.length) return null;
     return (task) => {
-      const title = task.title.toLowerCase();
-      const hay = `${title}\n${task.note.toLowerCase()}\n${task.tags.join(' ').toLowerCase()}`;
-      return terms.every((term) => hay.includes(term) || (term.length >= 2 && isSubsequence(term, title)));
+      const note = task.note.toLowerCase();
+      const head = note.split('\n')[0];
+      const hay = `${note}\n${task.tags.join(' ').toLowerCase()}`;
+      return terms.every((term) => hay.includes(term) || (term.length >= 2 && isSubsequence(term, head)));
     };
   }
 
@@ -384,6 +431,9 @@
     toDueString,
     formatDue,
     dueState,
+    taskLabel,
+    parseQuickInput,
+    hasLegacyTitles,
     createTask,
     createProject,
     normalizeTask,

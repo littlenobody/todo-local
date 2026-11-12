@@ -44,7 +44,7 @@ class Reminders {
         if (!due || now < due.getTime() - lead) return;
         if (this.reminded[task.id] === task.due) return;
         this.reminded[task.id] = task.due;
-        fired.push({ id: task.id, title: task.title, project: project.name, due: task.due });
+        fired.push({ id: task.id, label: TaskLib.taskLabel(task, 60), project: project.name, due: task.due });
       });
     }
 

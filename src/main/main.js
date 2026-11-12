@@ -135,11 +135,10 @@ function destroyTray() {
   tray = null;
 }
 
-/** 根据当前模式应用窗口特性：任务栏、透明度、托盘图标 */
+/** 根据当前模式应用窗口特性：透明度、托盘图标（便笺模式保留任务栏项，否则不会出现在 alt+tab 中） */
 function applyTraits() {
   if (!alive()) return;
   const note = isNote();
-  win.setSkipTaskbar(note);
   win.setMaximizable(!note);
   win.setOpacity(note ? state.settings.noteOpacity : 1);
   if (note) destroyTray();
@@ -177,7 +176,6 @@ function createWindow(firstRun) {
     minHeight: MIN_H,
     frame: false,
     show: false,
-    skipTaskbar: note,
     backgroundColor: note ? '#fff7c2' : '#f5f6fa',
     icon: createWindowIcon(),
     title: '待办清单',
@@ -251,10 +249,10 @@ function notify(title, body, taskId) {
 function onDue(items) {
   if (items.length <= 3) {
     for (const it of items) {
-      notify(`任务到期：${it.title || '（无标题）'}`, `${it.project} · ${TaskLib.formatDue(it.due)}`, it.id);
+      notify(`任务到期：${it.label}`, `${it.project} · ${TaskLib.formatDue(it.due)}`, it.id);
     }
   } else {
-    const names = items.slice(0, 3).map((i) => i.title || '（无标题）').join('、');
+    const names = items.slice(0, 3).map((i) => i.label).join('、');
     notify(`${items.length} 个任务已到期`, `${names} 等`, items[0].id);
   }
   // 便笺模式下窗口沉在底层，把它提到前面让提醒更醒目（不抢焦点）
@@ -274,7 +272,17 @@ function start() {
   stateFile = path.join(dataDir, 'todo-data.json');
   windowFile = path.join(dataDir, 'window.json');
   const firstRun = !fs.existsSync(stateFile);
-  state = TaskLib.normalizeState(readJson(stateFile, null));
+  const rawState = readJson(stateFile, null);
+  if (TaskLib.hasLegacyTitles(rawState)) {
+    // 任务不再有标题，旧标题会并入备注；迁移前留一份原始数据（只创建一次）
+    const legacyBak = `${stateFile}.pre-notitle.bak`;
+    try {
+      if (!fs.existsSync(legacyBak)) fs.copyFileSync(stateFile, legacyBak);
+    } catch (err) {
+      console.warn('[store] 迁移前备份失败：', err.message);
+    }
+  }
+  state = TaskLib.normalizeState(rawState);
   const prefs = readJson(windowFile, {});
   winPrefs = prefs && typeof prefs === 'object' ? prefs : {};
 

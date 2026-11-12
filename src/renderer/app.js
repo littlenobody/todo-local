@@ -11,17 +11,15 @@
   let searchText = '';
   const filter = { include: [], exclude: [], mode: 'and' }; // 标签键均为小写
   let tagbarOpen = false;
-  let panelOpen = null; // 展开详情面板的任务 id
   let addingSub = null; // 正在添加子任务的父任务 id
   let pendingFocus = null; // { id, sel } 渲染后聚焦
-  let composeProjectId = null;
+  let composer = null; // { pid, text }：正在列表末尾“添加任务”框里编辑的项目与草稿
+  let composerFocus = false; // 渲染后把焦点放回添加框
+  let listRendering = false; // 重建列表期间，忽略被移除输入框触发的 blur
   const doneOpen = new Set(); // 已展开的“已完成”分组
   let saveTimer = null;
 
-  const short = (s) => {
-    const t = (s || '').trim() || '（无标题）';
-    return t.length > 18 ? t.slice(0, 18) + '…' : t;
-  };
+  const short = (t) => TL.taskLabel(t, 18);
   const nodeOf = (id) => document.querySelector(`.node[data-id="${CSS.escape(id)}"]`);
   const getPredicate = () => TL.andPredicates(TL.makeTagPredicate(filter), TL.makeSearchPredicate(searchText));
   const isComposing = (e) => e.isComposing || e.keyCode === 229;
@@ -54,7 +52,7 @@
   }
   function setView(id) {
     state.ui.view = id;
-    panelOpen = null;
+    composer = null;
     addingSub = null;
     document.body.classList.remove('drawer-open');
     commit();
@@ -257,37 +255,27 @@
           )
         );
       }
-      if (nodes.length) frag.append(renderLevel(nodes, project, 'root:' + project.id, false, !!pred));
-      else if (!pred) frag.append(el('div', { class: 'empty' + (view === 'all' ? ' small' : ''), text: '还没有任务，在下方输入添加' }));
+      if (nodes.length) frag.append(renderLevel(nodes, project, 'root:' + project.id, false, !!pred, buildAddBox(project)));
+      else {
+        if (!pred) frag.append(el('div', { class: 'empty' + (view === 'all' ? ' small' : ''), text: '还没有任务' }));
+        else if (view !== 'all') frag.append(noResults());
+        frag.append(buildAddBox(project));
+      }
     }
-    if (pred && total === 0) {
-      frag.append(
-        el(
-          'div',
-          { class: 'empty' },
-          el('div', { text: '没有符合条件的任务' }),
-          el(
-            'button',
-            {
-              class: 'btn small',
-              type: 'button',
-              onclick: () => {
-                searchText = '';
-                $('#search').value = '';
-                $('#search-clear').hidden = true;
-                filter.include = [];
-                filter.exclude = [];
-                renderTagbar();
-                renderList();
-              },
-            },
-            '清除搜索和筛选'
-          )
-        )
-      );
-    }
+    if (pred && total === 0 && view === 'all') frag.append(noResults());
+    listRendering = true;
     list.replaceChildren(frag);
+    listRendering = false;
     list.scrollTop = scrollTop;
+
+    if (composerFocus) {
+      composerFocus = false;
+      const ta = list.querySelector('.add-box.open textarea');
+      if (ta) {
+        ta.focus();
+        ta.scrollIntoView({ block: 'nearest' });
+      }
+    }
 
     if (pendingFocus) {
       const { id, sel } = pendingFocus;
@@ -301,12 +289,39 @@
     }
   }
 
-  function renderLevel(nodes, project, groupKey, inDone, filtering) {
+  function noResults() {
+    return el(
+      'div',
+      { class: 'empty' },
+      el('div', { text: '没有符合条件的任务' }),
+      el(
+        'button',
+        {
+          class: 'btn small',
+          type: 'button',
+          onclick: () => {
+            searchText = '';
+            $('#search').value = '';
+            $('#search-clear').hidden = true;
+            filter.include = [];
+            filter.exclude = [];
+            renderTagbar();
+            renderList();
+          },
+        },
+        '清除搜索和筛选'
+      )
+    );
+  }
+
+  /** tail：追加在本层未完成任务之后、“已完成”分组之前（新任务正好插在这里） */
+  function renderLevel(nodes, project, groupKey, inDone, filtering, tail) {
     const box = el('div', { class: 'level' });
     const group = state.settings.completedToBottom && !inDone;
     const openNodes = group ? nodes.filter((n) => !n.task.done) : nodes;
     const doneNodes = group ? nodes.filter((n) => n.task.done) : [];
     openNodes.forEach((n) => box.append(renderNode(n, project, inDone, filtering)));
+    if (tail) box.append(tail);
     if (doneNodes.length) {
       const expanded = filtering || doneOpen.has(groupKey);
       const label = [icon('chevronRight'), `已完成 (${doneNodes.length})`];
@@ -339,7 +354,6 @@
     const t = node.task;
     const wrap = el('div', { class: 'node', dataset: { id: t.id } });
     wrap.append(buildRow(node, project, filtering));
-    if (panelOpen === t.id) wrap.append(buildPanel(t, project));
     if (addingSub === t.id) wrap.append(buildSubForm(t, project));
     if (node.children.length && (filtering || !t.collapsed)) {
       wrap.append(el('div', { class: 'children' }, renderLevel(node.children, project, t.id, inDone || t.done, filtering)));
@@ -398,98 +412,55 @@
       t.done ? icon('check') : null
     );
 
-    const title = el('textarea', { class: 'title-input', rows: '1', maxlength: '500', spellcheck: 'false', 'aria-label': '任务标题' });
-    title.value = t.title;
-    title.addEventListener('keydown', (e) => {
+    const text = el('textarea', {
+      class: 'task-text',
+      rows: '1',
+      maxlength: '20000',
+      spellcheck: 'false',
+      placeholder: '写点内容…',
+      title: 'Enter 换行，Ctrl+Enter 或 Esc 结束编辑',
+      'aria-label': '任务内容',
+    });
+    text.value = t.note;
+    text.addEventListener('input', () => {
+      t.note = text.value;
+      commit();
+    });
+    text.addEventListener('keydown', (e) => {
       if (isComposing(e)) return;
-      if (e.key === 'Enter') {
+      if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || e.key === 'Escape') {
         e.preventDefault();
-        title.blur();
-      } else if (e.key === 'Escape') {
-        title.value = t.title;
-        title.blur();
+        text.blur();
       }
     });
-    title.addEventListener('change', () => {
-      const v = title.value.replace(/\s+/g, ' ').trim();
-      if (!v) {
-        title.value = t.title;
-        return;
-      }
-      title.value = v;
-      t.title = v;
+    text.addEventListener('change', () => {
+      // 结束编辑时去掉首尾空白和行尾空格，连续空行最多保留一个
+      const v = text.value.replace(/\r\n?/g, '\n').replace(/[^\S\n]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+      text.value = v;
+      t.note = v;
       commit();
     });
 
     const row = el(
       'div',
-      { class: 'row' + (t.done ? ' is-done' : '') + (node.match ? (getPredicate() ? ' hit' : '') : ' dim') + (panelOpen === t.id ? ' sel' : '') },
+      { class: 'row' + (t.done ? ' is-done' : '') + (node.match ? (getPredicate() ? ' hit' : '') : ' dim') },
       twisty,
       check,
-      el('div', { class: 'row-main' }, title, buildMeta(t)),
+      el('div', { class: 'row-main' }, text, buildMeta(t)),
       el(
         'div',
         { class: 'row-actions' },
         iconBtn('sub', '添加子任务', () => startSub(t)),
-        iconBtn('edit', '备注 / 标签 / 时间', () => togglePanel(t.id), panelOpen === t.id),
         iconBtn('trash', '删除任务', () => deleteTask(project, t), undefined, 'del')
       )
     );
     return row;
   }
 
-  function buildMeta(t) {
-    const meta = el('div', { class: 'meta' });
-    if (t.due) {
-      const st = TL.dueState(t);
-      meta.append(
-        el('button', { class: 'chip due ' + st, type: 'button', title: '修改时间', onclick: () => openPanel(t.id) }, icon('clock'), TL.formatDue(t.due) + (st === 'overdue' ? '（已逾期）' : ''))
-      );
-    }
-    for (const tag of t.tags) {
-      const key = tag.toLowerCase();
-      const cls = filter.include.includes(key) ? ' active' : '';
-      meta.append(el('button', { class: 'chip tag' + cls, type: 'button', title: '按此标签筛选', onclick: () => toggleInclude(tag) }, '#' + tag));
-    }
-    if (t.note.trim()) {
-      meta.append(el('button', { class: 'chip', type: 'button', title: '查看备注', onclick: () => openPanel(t.id) }, icon('note'), '备注'));
-    }
-    if (t.children.length) {
-      const done = t.children.filter((c) => c.done).length;
-      meta.append(el('span', { class: 'chip', title: '子任务完成进度', text: `${done}/${t.children.length}` }));
-    }
-    meta.hidden = meta.childNodes.length === 0;
-    return meta;
-  }
-
-  /** 只替换某个任务行里的徽标区，不重建列表（避免打断输入焦点） */
-  function refreshMeta(id) {
-    const found = TL.findInState(state, id);
-    const node = nodeOf(id);
-    const old = node && node.querySelector(':scope > .row .meta');
-    if (found && old) old.replaceWith(buildMeta(found.task));
-  }
-
-  /* ---------- 详情面板 ---------- */
-  function openPanel(id) {
-    panelOpen = id;
-    pendingFocus = { id, sel: '.panel .note-input' };
-    renderList();
-  }
-  function togglePanel(id) {
-    if (panelOpen === id) {
-      panelOpen = null;
-      renderList();
-    } else {
-      openPanel(id);
-    }
-  }
-
-  function setDue(t, value, input) {
+  /* ---------- 任务内容下面平铺的信息：时间 / 标签 / 子任务进度 ---------- */
+  function setDue(t, value) {
     t.due = TL.parseDue(value) ? value : null;
-    if (input) input.value = t.due || '';
     commit();
-    refreshMeta(t.id);
     renderSidebar();
   }
 
@@ -500,115 +471,259 @@
     return TL.toDueString(d);
   }
 
-  function buildTagEditor(t) {
-    const holder = el('span', { class: 'contents' });
-    const input = el('input', { class: 'tag-input', type: 'text', maxlength: '30', list: 'tag-suggest', placeholder: '输入后回车添加', 'aria-label': '添加标签' });
-    const box = el('div', { class: 'tag-edit' }, holder, input);
+  /**
+   * 时间和标签直接显示在内容下面，可就地修改。
+   * 添加入口（class="ghost"）只在这一行获得焦点时显示。
+   * 修改只重绘本区域，不重建整个列表，避免打断正在输入的焦点。
+   */
+  function buildMeta(t) {
+    const meta = el('div', { class: 'meta' });
+    const dueSlot = el('span', { class: 'contents' });
+    const tagsBox = el('span', { class: 'contents' });
+    let editingDue = false;
 
-    const changed = () => {
+    const syncInfo = () => meta.classList.toggle('has-info', !!(t.due || t.tags.length || t.children.length || editingDue));
+
+    const paintDue = () => {
+      syncInfo();
+      if (editingDue) {
+        const input = el('input', { class: 'due-input', type: 'datetime-local', 'aria-label': '到期时间', value: t.due });
+        input.addEventListener('change', () => setDue(t, input.value));
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter' || e.key === 'Escape') {
+            e.preventDefault();
+            input.blur();
+          }
+        });
+        input.addEventListener('blur', () => {
+          if (!editingDue) return;
+          editingDue = false;
+          paintDue();
+        });
+        dueSlot.replaceChildren(input);
+        input.focus();
+        try {
+          input.showPicker();
+        } catch {
+          /* 需要用户操作才能弹出，失败时手动输入即可 */
+        }
+        return;
+      }
+      const edit = () => {
+        editingDue = true;
+        paintDue();
+      };
+      if (t.due) {
+        const st = TL.dueState(t);
+        dueSlot.replaceChildren(
+          el('button', { class: 'chip due ' + st, type: 'button', title: '修改时间', onclick: edit }, icon('clock'), TL.formatDue(t.due) + (st === 'overdue' ? '（已逾期）' : '')),
+          el(
+            'button',
+            {
+              class: 'chip ghost icon-chip',
+              type: 'button',
+              title: '清除时间',
+              'aria-label': '清除时间',
+              onclick: () => {
+                setDue(t, '');
+                paintDue();
+              },
+            },
+            icon('close')
+          )
+        );
+      } else {
+        const quick = (label, value) =>
+          el(
+            'button',
+            {
+              class: 'chip ghost',
+              type: 'button',
+              onclick: () => {
+                setDue(t, value);
+                paintDue();
+              },
+            },
+            label
+          );
+        dueSlot.replaceChildren(
+          el('button', { class: 'chip ghost', type: 'button', title: '设置到期时间', onclick: edit }, icon('clock'), '时间'),
+          quick('今天 18:00', quickDue(0, 18)),
+          quick('明天 9:00', quickDue(1, 9))
+        );
+      }
+    };
+
+    const tagsChanged = () => {
       commit();
-      refreshMeta(t.id);
+      syncInfo();
       renderTagbar();
       updateTagSuggest();
     };
-    const paint = () => {
-      holder.replaceChildren(
-        ...t.tags.map((tag) =>
-          el(
+    const paintTags = () => {
+      tagsBox.replaceChildren(
+        ...t.tags.map((tag) => {
+          const active = filter.include.includes(tag.toLowerCase()) ? ' active' : '';
+          return el(
             'span',
-            { class: 'chip removable' },
-            '#' + tag,
+            { class: 'chip tag removable' + active },
+            el('button', { class: 'chip-label', type: 'button', title: '按此标签筛选', onclick: () => toggleInclude(tag) }, '#' + tag),
             el(
               'button',
               {
                 type: 'button',
+                title: '移除标签',
                 'aria-label': `移除标签 ${tag}`,
                 onclick: () => {
                   t.tags = t.tags.filter((x) => x !== tag);
-                  paint();
-                  changed();
-                  input.focus();
+                  paintTags();
+                  tagsChanged();
                 },
               },
               icon('close')
+            )
+          );
+        })
+      );
+    };
+
+    const tagInput = el('input', { class: 'tag-input ghost', type: 'text', maxlength: '30', list: 'tag-suggest', placeholder: '＋标签', 'aria-label': '添加标签' });
+    const addTags = () => {
+      const fresh = TL.splitTagInput(tagInput.value);
+      tagInput.value = '';
+      if (!fresh.length) return;
+      t.tags = TL.uniqueTags([...t.tags, ...fresh]);
+      paintTags();
+      tagsChanged();
+    };
+    tagInput.addEventListener('keydown', (e) => {
+      if (isComposing(e)) return;
+      if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
+        e.preventDefault();
+        addTags();
+      } else if (e.key === 'Backspace' && !tagInput.value && t.tags.length) {
+        t.tags = t.tags.slice(0, -1);
+        paintTags();
+        tagsChanged();
+      } else if (e.key === 'Escape') {
+        tagInput.blur();
+      }
+    });
+    tagInput.addEventListener('blur', addTags);
+
+    let progress = null;
+    if (t.children.length) {
+      const done = t.children.filter((c) => c.done).length;
+      progress = el('span', { class: 'chip', title: '子任务完成进度', text: `${done}/${t.children.length}` });
+    }
+
+    meta.append(...[dueSlot, tagsBox, progress, tagInput].filter(Boolean));
+    paintDue();
+    paintTags();
+    return meta;
+  }
+
+  /* ---------- 任务操作 ---------- */
+  /* ---------- 列表末尾的“添加任务”框 ---------- */
+  /**
+   * 平时是一行“＋ 添加任务”，点击后变成文本域：Enter 换行，Ctrl+Enter 添加，Esc 取消。
+   * 内容里的 #标签 会被提取为标签。重建列表时草稿会保留；失焦且内容为空时自动收起。
+   */
+  function buildAddBox(project) {
+    const box = el('div', { class: 'add-box' });
+
+    const submit = () => {
+      const parsed = TL.parseQuickInput(composer.text);
+      if (!parsed.text && !parsed.tags.length) return;
+      composer = { pid: project.id, text: '' };
+      composerFocus = true; // 添加后保持展开，方便连续输入
+      addTask(project, null, parsed);
+    };
+
+    const paint = () => {
+      const open = !!composer && composer.pid === project.id;
+      box.classList.toggle('open', open);
+      if (!open) {
+        box.replaceChildren(
+          el(
+            'button',
+            {
+              class: 'add-open',
+              type: 'button',
+              onclick: () => {
+                composer = { pid: project.id, text: '' };
+                paint();
+                const ta = box.querySelector('textarea');
+                ta.focus();
+                ta.scrollIntoView({ block: 'nearest' });
+              },
+            },
+            el('span', { class: 'twisty ph' }),
+            el('span', { class: 'check add' }, icon('plus')),
+            el('span', { class: 'add-label', text: '添加任务' })
+          )
+        );
+        return;
+      }
+
+      const ta = el('textarea', {
+        class: 'task-text add-text',
+        rows: '2',
+        maxlength: '20000',
+        spellcheck: 'false',
+        placeholder: '写点内容，可用 #标签',
+        'aria-label': '添加任务',
+      });
+      ta.value = composer.text;
+      ta.addEventListener('input', () => {
+        composer.text = ta.value;
+      });
+      ta.addEventListener('keydown', (e) => {
+        if (isComposing(e)) return;
+        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+          e.preventDefault();
+          composer.text = ta.value;
+          submit();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          composer = null;
+          paint();
+        }
+      });
+      ta.addEventListener('blur', () => {
+        if (listRendering || !composer || composer.pid !== project.id) return;
+        if (!ta.value.trim()) {
+          composer = null;
+          paint();
+        }
+      });
+      box.replaceChildren(
+        el(
+          'div',
+          { class: 'row add-row' },
+          el('span', { class: 'twisty ph' }),
+          el('span', { class: 'check add' }, icon('plus')),
+          el(
+            'div',
+            { class: 'row-main' },
+            ta,
+            el(
+              'div',
+              { class: 'add-hint' },
+              el('span', { text: 'Ctrl+Enter 添加 · Esc 取消' }),
+              el('button', { class: 'btn small primary', type: 'button', onclick: submit }, '添加')
             )
           )
         )
       );
     };
-    const add = () => {
-      const fresh = TL.splitTagInput(input.value);
-      input.value = '';
-      if (!fresh.length) return;
-      t.tags = TL.uniqueTags([...t.tags, ...fresh]);
-      paint();
-      changed();
-    };
-    input.addEventListener('keydown', (e) => {
-      if (isComposing(e)) return;
-      if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
-        e.preventDefault();
-        add();
-      } else if (e.key === 'Backspace' && !input.value && t.tags.length) {
-        t.tags = t.tags.slice(0, -1);
-        paint();
-        changed();
-      }
-    });
-    input.addEventListener('blur', add);
+
     paint();
     return box;
   }
 
-  function buildPanel(t) {
-    const note = el('textarea', { class: 'field note-input', rows: '3', maxlength: '20000', placeholder: '写点备注…', 'aria-label': '备注' });
-    note.value = t.note;
-    note.addEventListener('input', () => {
-      t.note = note.value;
-      commit();
-      refreshMeta(t.id);
-    });
-
-    const due = el('input', { class: 'field', type: 'datetime-local', 'aria-label': '到期时间', value: t.due });
-    due.addEventListener('change', () => setDue(t, due.value, due));
-    const quick = (label, value) => el('button', { class: 'btn small', type: 'button', onclick: () => setDue(t, value, due) }, label);
-
-    return el(
-      'div',
-      { class: 'panel' },
-      el('div', { class: 'panel-row' }, el('span', { class: 'lbl', text: '备注' }), note),
-      el('div', { class: 'panel-row' }, el('span', { class: 'lbl', text: '标签' }), buildTagEditor(t)),
-      el(
-        'div',
-        { class: 'panel-row' },
-        el('span', { class: 'lbl', text: '时间' }),
-        el(
-          'div',
-          { class: 'panel-ctl' },
-          due,
-          quick('今天 18:00', quickDue(0, 18)),
-          quick('明天 9:00', quickDue(1, 9)),
-          quick('清除', '')
-        )
-      )
-    );
-  }
-
-  /* ---------- 任务操作 ---------- */
-  function parseQuickInput(text) {
-    const tags = [];
-    const title = String(text)
-      .replace(/(^|\s)[#＃]([^\s#＃]+)/g, (_m, sp, tag) => {
-        tags.push(tag);
-        return sp;
-      })
-      .replace(/\s+/g, ' ')
-      .trim();
-    return { title, tags: TL.uniqueTags(tags) };
-  }
-
   function addTask(project, parent, parsed) {
-    const task = TL.createTask(parsed.title, { tags: parsed.tags });
+    const task = TL.createTask(parsed.text, { tags: parsed.tags });
     const keep = state.settings.completedToBottom;
     if (parent) {
       if (parent.done) TL.setDone(project.tasks, parent.id, false, { moveToBottom: keep });
@@ -618,13 +733,15 @@
       TL.insertTask(project.tasks, task, keep);
     }
     commit();
+    // 从列表末尾的添加框连续添加时，文本域保持展开并已滚动到可见位置，不再把视图拉到新任务
+    const fromAddBox = !parent && !!composer && composer.pid === project.id;
     renderAll();
     const pred = getPredicate();
     if (pred && !pred(task)) toast('已添加，但不符合当前搜索或筛选，暂时不可见');
     else {
       const n = nodeOf(task.id);
       if (n) {
-        n.scrollIntoView({ block: 'nearest' });
+        if (!fromAddBox) n.scrollIntoView({ block: 'nearest' });
         flash(n);
       }
     }
@@ -645,12 +762,12 @@
   }
 
   function buildSubForm(t, project) {
-    const input = el('input', { class: 'sub-input', type: 'text', maxlength: '200', placeholder: '子任务，回车添加，Esc 结束', 'aria-label': `为「${short(t.title)}」添加子任务` });
+    const input = el('input', { class: 'sub-input', type: 'text', maxlength: '200', placeholder: '子任务，回车添加，Esc 结束', 'aria-label': `为「${short(t)}」添加子任务` });
     const form = el('form', { class: 'sub-form', autocomplete: 'off' }, input);
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const parsed = parseQuickInput(input.value);
-      if (!parsed.title) return;
+      const parsed = TL.parseQuickInput(input.value);
+      if (!parsed.text && !parsed.tags.length) return;
       pendingFocus = { id: t.id, sel: '.sub-form .sub-input' };
       addTask(project, t, parsed);
     });
@@ -677,7 +794,7 @@
     commit();
     renderAll();
     if (willDone && state.settings.completedToBottom) {
-      toast(`已完成「${short(t.title)}」，收起到“已完成”`, {
+      toast(`已完成「${short(t)}」，收起到“已完成”`, {
         action: '撤销',
         onAction: () => {
           TL.setDone(project.tasks, t.id, false, { moveToBottom: true });
@@ -698,12 +815,11 @@
     const { siblings, index } = path[path.length - 1];
     const parentId = path.length > 1 ? path[path.length - 2].task.id : null;
     siblings.splice(index, 1);
-    if (panelOpen === t.id) panelOpen = null;
     if (addingSub === t.id) addingSub = null;
     commit();
     renderAll();
     const extra = t.children.length ? `（含 ${t.children.length} 个子任务）` : '';
-    toast(`已删除「${short(t.title)}」${extra}`, {
+    toast(`已删除「${short(t)}」${extra}`, {
       action: '撤销',
       onAction: () => {
         const p = projectById(project.id);
@@ -788,24 +904,10 @@
     state.projects = state.projects.filter((p) => p.id !== project.id);
     if (!state.projects.length) state.projects.push(TL.createProject('收件箱', 0));
     if (state.ui.view === project.id) state.ui.view = state.projects[0].id;
-    panelOpen = null;
+    composer = null;
     addingSub = null;
     commit();
     renderAll();
-  }
-
-  /* ---------- 底部输入 ---------- */
-  function renderComposer() {
-    const select = $('#compose-project');
-    const show = state.ui.view === 'all' && state.projects.length > 1;
-    select.hidden = !show;
-    if (!projectById(composeProjectId)) composeProjectId = state.projects[0].id;
-    select.replaceChildren(...state.projects.map((p) => el('option', { value: p.id, text: p.name })));
-    select.value = composeProjectId;
-  }
-  function composeTarget() {
-    if (state.ui.view !== 'all') return projectById(state.ui.view);
-    return projectById(composeProjectId) || state.projects[0];
   }
 
   /* ---------- 设置 ---------- */
@@ -841,7 +943,7 @@
     const body = el(
       'div',
       {},
-      switchRow('便笺模式', '小窗口、隐藏托盘图标和任务栏、窗口层级较低', s.noteMode, (v) => {
+      switchRow('便笺模式', '小窗口、隐藏托盘图标、窗口层级较低', s.noteMode, (v) => {
         closeModal();
         setNoteMode(v);
       }),
@@ -922,7 +1024,6 @@
     renderSidebar();
     renderTagbar();
     renderList();
-    renderComposer();
     updateTagSuggest();
   }
 
@@ -936,7 +1037,6 @@
     set('#search-clear', 'close');
     set('#btn-filter', 'filter');
     set('#new-project button', 'plus');
-    set('#composer button', 'plus');
     $('#search-icon').append(icon('search'));
     $('#btn-close').classList.add('close');
     $('#btn-drawer').addEventListener('click', () => document.body.classList.toggle('drawer-open'));
@@ -989,22 +1089,6 @@
       if (!name) return;
       input.value = '';
       addProject(name);
-    });
-
-    $('#compose-project').addEventListener('change', (e) => {
-      composeProjectId = e.target.value;
-    });
-    $('#composer').addEventListener('submit', (e) => {
-      e.preventDefault();
-      const input = $('#compose-input');
-      const parsed = parseQuickInput(input.value);
-      if (!parsed.title) {
-        if (input.value.trim()) toast('请输入任务内容，标签之外至少要有一些文字');
-        return;
-      }
-      input.value = '';
-      addTask(composeTarget(), null, parsed);
-      input.focus();
     });
 
     document.addEventListener('keydown', (e) => {
