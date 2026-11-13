@@ -45,6 +45,19 @@ test('链接只允许 http / https / mailto，没写协议时补 https', () => {
   }
 });
 
+test('findLinks：识别纯文本里的网址并去掉末尾标点', () => {
+  const pick = (s) => ML.findLinks(s).map((l) => s.slice(l.start, l.end));
+  assert.deepEqual(pick('看 https://example.com/a?b=1。'), ['https://example.com/a?b=1']);
+  assert.deepEqual(pick('访问https://a.com查看'), ['https://a.com']);
+  assert.deepEqual(pick('(见 http://a.com/x_(y))'), ['http://a.com/x_(y)']);
+  assert.deepEqual(pick('(http://a.com/x)'), ['http://a.com/x']);
+  assert.deepEqual(pick('a https://a.com, b www.b.com/c! c'), ['https://a.com', 'www.b.com/c']);
+  assert.deepEqual(pick('x@www.b.com 与 foo.www.b.com'), []);
+  assert.equal(ML.findLinks('see www.b.com')[0].href, 'https://www.b.com');
+  assert.deepEqual(pick('javascript:alert(1) ftp://a.com 没有链接'), []);
+  assert.deepEqual(ML.findLinks(null), []);
+});
+
 test('项目带 hasMemo 标记，旧数据默认没有备忘录', () => {
   assert.equal(TL.createProject('x', 0).hasMemo, false);
   const s = TL.normalizeState({ projects: [{ id: 'p1', name: 'A', tasks: [] }, { id: 'p2', name: 'B', hasMemo: true, tasks: [] }] });

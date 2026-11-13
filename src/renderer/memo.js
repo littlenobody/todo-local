@@ -638,13 +638,7 @@
       handleIncoming(dt);
     });
 
-    editor.addEventListener('click', (e) => {
-      const a = e.target.closest && e.target.closest('a');
-      if (a && editor.contains(a) && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        api.openExternal(a.getAttribute('href') || '');
-      }
-    });
+    // 按住 Ctrl 单击链接打开浏览器：见 links.js
 
     editor.addEventListener('keydown', (e) => {
       if (e.isComposing || e.keyCode === 229) return;

@@ -45,5 +45,33 @@
     return s;
   }
 
-  return { MAX_MEMO_CHARS, isValidMemoId, isSafeImageSrc, safeLinkHref };
+  // 只认 ASCII 的 URL 字符，这样“访问https://a.com查看”不会把后面的汉字吞进链接
+  const URL_RE = /(?<![A-Za-z0-9.@-])(?:https?:\/\/|www\.(?=[A-Za-z0-9]))[A-Za-z0-9\-._~:/?#[\]@!$&'()*+,;=%]+/gi;
+
+  const countOf = (s, ch) => s.split(ch).length - 1;
+
+  /**
+   * 在纯文本里找出 http(s):// 和 www. 开头的链接。
+   * 返回 [{ start, end, url, href }]，start/end 是在原文中的下标（左闭右开）。
+   */
+  function findLinks(text) {
+    const s = String(text == null ? '' : text);
+    const out = [];
+    if (!/https?:\/\/|www\./i.test(s)) return out;
+    for (const m of s.matchAll(URL_RE)) {
+      let url = m[0];
+      for (;;) {
+        const last = url[url.length - 1];
+        if (/[.,;:!?'*]/.test(last)) url = url.slice(0, -1);
+        else if (last === ')' && countOf(url, '(') < countOf(url, ')')) url = url.slice(0, -1);
+        else if (last === ']' && countOf(url, '[') < countOf(url, ']')) url = url.slice(0, -1);
+        else break;
+      }
+      const href = safeLinkHref(url);
+      if (href) out.push({ start: m.index, end: m.index + url.length, url, href });
+    }
+    return out;
+  }
+
+  return { MAX_MEMO_CHARS, isValidMemoId, isSafeImageSrc, safeLinkHref, findLinks };
 });

@@ -3,6 +3,7 @@
  * 把 dist 里的安装包发布到 GitHub Release（tag 为 v<package.json 版本>）。
  *   node build/publish-release.js            # 发布；release 已存在则只补传缺失的安装包
  *   node build/publish-release.js --dry-run  # 只检查，不发请求
+ *   node build/publish-release.js --notes-file RELEASE_NOTES.md  # 用文件内容作为更新说明（新建 release 时生效）
  * 令牌：优先读环境变量 GITHUB_TOKEN，否则取 git 已保存的 github.com 凭据（与 git push 相同）。
  * 资源名固定为英文（见 src/main/update-utils.js），GitHub 会丢掉中文文件名。
  */
@@ -16,6 +17,8 @@ const pkg = require('../package.json');
 const version = pkg.version;
 const tag = `v${version}`;
 const dryRun = process.argv.includes('--dry-run');
+const notesIdx = process.argv.indexOf('--notes-file');
+const notesFile = notesIdx > -1 ? process.argv[notesIdx + 1] : null;
 
 function findInstaller() {
   const dist = path.join(root, 'dist');
@@ -61,13 +64,20 @@ async function main() {
   const token = getToken();
   const api = `https://api.github.com/repos/${REPO}`;
 
+  const notes = notesFile ? fs.readFileSync(path.resolve(notesFile), 'utf8').trim() : '';
+  if (notesFile && !notes) throw new Error(`更新说明文件为空：${notesFile}`);
+
   let res = await gh(token, `${api}/releases/tags/${tag}`);
   let release;
   if (res.status === 404) {
     res = await gh(token, `${api}/releases`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ tag_name: tag, name: `${pkg.build.productName} ${tag}`, generate_release_notes: true }),
+      body: JSON.stringify({
+        tag_name: tag,
+        name: `${pkg.build.productName} ${tag}`,
+        ...(notes ? { body: notes } : { generate_release_notes: true }),
+      }),
     });
     if (!res.ok) throw new Error(`创建 release 失败：${res.status} ${await res.text()}`);
     release = await res.json();

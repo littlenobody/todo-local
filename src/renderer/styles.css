@@ -647,6 +647,23 @@ body.note .memo-panel { right: 8px; bottom: 52px; width: calc(100% - 16px); heig
 .memo-editor pre code { padding: 0; background: transparent; }
 .memo-editor hr { border: 0; border-top: 1px solid var(--border); margin: 0.8em 0; }
 .memo-editor a { color: var(--accent); text-decoration: underline; cursor: text; }
+.memo-editor.link-ctrl, .memo-editor.link-ctrl a, .task-text.link-ctrl { cursor: pointer; }
+
+/* 链接悬停提示 + 判断 textarea 里链接位置用的隐藏镜像 */
+.link-mirror { position: fixed; left: 0; top: 0; visibility: hidden; pointer-events: none; margin: 0; border: 0; box-sizing: border-box; }
+#link-tip {
+  position: fixed; left: 0; top: 0; z-index: 300;
+  padding: 4px 10px;
+  border-radius: 6px;
+  background: #2a2f3d;
+  color: #fff;
+  font-size: 12px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+#link-tip.show { opacity: 1; }
 .memo-editor img { display: block; max-width: 100%; height: auto; margin: 4px 0; border-radius: 4px; }
 .memo-editor table { width: 100%; margin: 4px 0 8px; border-collapse: collapse; table-layout: fixed; }
 .memo-editor th, .memo-editor td { min-width: 40px; padding: 4px 8px; border: 1px solid var(--border); vertical-align: top; word-break: break-word; }
