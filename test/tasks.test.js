@@ -303,3 +303,133 @@ test('moveTaskInState: 跨项目或项目内拖动', () => {
   assert.deepEqual(names(p1.tasks), ['t1', 't3', 't2']);
   assert.deepEqual(names(p2.tasks), []);
 });
+
+test('isBlankTask: 只有空白才算空任务', () => {
+  assert.equal(TL.isBlankTask(mk('')), true);
+  assert.equal(TL.isBlankTask(mk('  \n ')), true);
+  assert.equal(TL.isBlankTask(mk('a')), false);
+  assert.equal(TL.isBlankTask(mk('', { tags: ['x'] })), false);
+  assert.equal(TL.isBlankTask(mk('', { due: '2030-01-01T09:00' })), false);
+  assert.equal(TL.isBlankTask(mk('', { children: [mk('c')] })), false);
+  assert.equal(TL.isBlankTask(null), false);
+});
+
+test('insertSibling: 在上方 / 下方插入同级任务', () => {
+  const a = mk('a');
+  const b = mk('b');
+  const tasks = [a, b];
+  assert.equal(TL.insertSibling(tasks, a.id, mk('x'), 'after', false), true);
+  assert.deepEqual(names(tasks), ['a', 'x', 'b']);
+  TL.insertSibling(tasks, a.id, mk('y'), 'before', false);
+  assert.deepEqual(names(tasks), ['y', 'a', 'x', 'b']);
+  assert.equal(TL.insertSibling(tasks, 'nope', mk('z'), 'after', false), false);
+
+  // 子层级
+  const c = mk('c', { children: [mk('c1')] });
+  const t2 = [c];
+  TL.insertSibling(t2, c.children[0].id, mk('c2'), 'after', false);
+  assert.deepEqual(names(c.children), ['c1', 'c2']);
+});
+
+test('insertSibling: 参照任务已完成且开启置底时，新任务放到未完成区末尾', () => {
+  const a = mk('a');
+  const d1 = mk('d1', { done: true });
+  const d2 = mk('d2', { done: true });
+  const tasks = [a, d1, d2];
+  TL.insertSibling(tasks, d1.id, mk('n'), 'after', true);
+  assert.deepEqual(names(tasks), ['a', 'n', 'd1', 'd2']);
+  // 参照任务未完成：仍紧跟其后
+  const b = mk('b');
+  const t2 = [a, b, d1];
+  TL.insertSibling(t2, a.id, mk('m'), 'after', true);
+  assert.deepEqual(names(t2), ['a', 'm', 'b', 'd1']);
+});
+
+test('indentTask: 变成上一个同级任务的最后一个子任务', () => {
+  const a = mk('a', { children: [mk('a1')], collapsed: true });
+  const b = mk('b');
+  const c = mk('c');
+  const tasks = [a, b, c];
+  assert.equal(TL.indentTask(tasks, b.id), true);
+  assert.deepEqual(names(tasks), ['a', 'c']);
+  assert.deepEqual(names(a.children), ['a1', 'b']);
+  assert.equal(a.collapsed, false); // 自动展开，能看到刚缩进的任务
+  assert.equal(TL.indentTask(tasks, a.id), false); // 第一个任务不能缩进
+  assert.equal(TL.indentTask(tasks, 'nope'), false);
+});
+
+test('indentTask: 未完成任务不能缩进到已完成任务下面', () => {
+  const d = mk('d', { done: true });
+  const x = mk('x');
+  const tasks = [d, x];
+  assert.equal(TL.indentTask(tasks, x.id), false);
+  assert.deepEqual(names(tasks), ['d', 'x']);
+});
+
+test('indentTask: 开启置底时插在子任务的未完成区末尾', () => {
+  const k = mk('k', { done: true });
+  const a = mk('a', { children: [mk('a1'), k] });
+  const b = mk('b');
+  const tasks = [a, b];
+  TL.indentTask(tasks, b.id, { keepDoneAtBottom: true });
+  assert.deepEqual(names(a.children), ['a1', 'b', 'k']);
+});
+
+test('outdentTask: 移出父任务，放在父任务后面', () => {
+  const b1 = mk('b1');
+  const b2 = mk('b2');
+  const b = mk('b', { children: [b1, b2] });
+  const c = mk('c');
+  const tasks = [b, c];
+  assert.equal(TL.outdentTask(tasks, b1.id), true);
+  assert.deepEqual(names(tasks), ['b', 'b1', 'c']);
+  assert.deepEqual(names(b.children), ['b2']);
+  assert.equal(TL.outdentTask(tasks, b.id), false); // 已在顶层
+
+  // 多级：移出一层后仍在上一层
+  const z = mk('z');
+  const y = mk('y', { children: [z] });
+  const x = mk('x', { children: [y] });
+  const t2 = [x];
+  TL.outdentTask(t2, z.id);
+  assert.deepEqual(names(x.children), ['y', 'z']);
+});
+
+test('outdentTask: 已完成任务移出后不越过未完成的同级', () => {
+  const d = mk('d', { done: true });
+  const p = mk('p', { children: [d] });
+  const q = mk('q');
+  const r = mk('r', { done: true });
+  const tasks = [p, q, r];
+  TL.outdentTask(tasks, d.id, { keepDoneAtBottom: true });
+  assert.deepEqual(names(tasks), ['p', 'q', 'r', 'd']);
+});
+
+test('shiftTask: 同级上移下移，边界不动', () => {
+  const a = mk('a');
+  const b = mk('b');
+  const c = mk('c');
+  const tasks = [a, b, c];
+  assert.equal(TL.shiftTask(tasks, b.id, 'up'), true);
+  assert.deepEqual(names(tasks), ['b', 'a', 'c']);
+  assert.equal(TL.shiftTask(tasks, b.id, 'up'), false);
+  assert.equal(TL.shiftTask(tasks, c.id, 'down'), false);
+  assert.equal(TL.shiftTask(tasks, a.id, 'down'), true);
+  assert.deepEqual(names(tasks), ['b', 'c', 'a']);
+
+  // 子任务只在自己这一层移动
+  const p = mk('p', { children: [mk('p1'), mk('p2')] });
+  const t2 = [p];
+  TL.shiftTask(t2, p.children[1].id, 'up');
+  assert.deepEqual(names(p.children), ['p2', 'p1']);
+});
+
+test('shiftTask: 开启置底时不跨越已完成与未完成的分界', () => {
+  const a = mk('a');
+  const d = mk('d', { done: true });
+  const tasks = [a, d];
+  assert.equal(TL.shiftTask(tasks, a.id, 'down', { keepDoneAtBottom: true }), false);
+  assert.deepEqual(names(tasks), ['a', 'd']);
+  assert.equal(TL.shiftTask(tasks, a.id, 'down', { keepDoneAtBottom: false }), true);
+  assert.deepEqual(names(tasks), ['d', 'a']);
+});

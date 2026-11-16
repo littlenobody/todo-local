@@ -17,6 +17,7 @@
     noteOpacity: 0.95,
     remindLeadMinutes: 0, // 提前提醒分钟数
     autoStart: false, // 开机自启
+    keybindings: Object.freeze({}), // 自定义快捷键：只存与默认不同的项 { 操作id: 'Ctrl+Enter' }，空串表示不设置
   });
 
   const PROJECT_COLORS = ['#4f7cff', '#ef6c57', '#2fb67c', '#e0a526', '#9b6bdf', '#e0589b', '#2aa5c7'];
@@ -211,6 +212,17 @@
     return Math.min(max, Math.max(min, n));
   }
 
+  /** 只做形状清理；具体组合键是否合法由渲染进程的 Keymap.resolve 判断，非法项会回落到默认 */
+  function normalizeKeybindings(raw) {
+    const out = {};
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return out;
+    for (const k of Object.keys(raw).slice(0, 100)) {
+      const v = raw[k];
+      if (/^[A-Za-z][A-Za-z0-9]{0,39}$/.test(k) && typeof v === 'string' && v.length <= 40) out[k] = v;
+    }
+    return out;
+  }
+
   function normalizeSettings(raw) {
     const r = raw && typeof raw === 'object' ? raw : {};
     const d = DEFAULT_SETTINGS;
@@ -224,6 +236,7 @@
       noteOpacity: Number.isFinite(r.noteOpacity) ? clamp(r.noteOpacity, 0.4, 1) : d.noteOpacity,
       remindLeadMinutes: Number.isFinite(r.remindLeadMinutes) ? clamp(Math.round(r.remindLeadMinutes), 0, 1440) : d.remindLeadMinutes,
       autoStart: bool(r.autoStart, d.autoStart),
+      keybindings: normalizeKeybindings(r.keybindings),
     };
   }
 
@@ -341,6 +354,64 @@
 
     const insertIndex = placement === 'before' ? tIndex : tIndex + 1;
     targetSiblings.splice(insertIndex, 0, sourceTask);
+    return true;
+  }
+
+  /** 没有任何内容的任务：无文字、标签、到期时间和子任务 */
+  function isBlankTask(task) {
+    return !!task && !String(task.note || '').trim() && !(task.tags && task.tags.length) && !task.due && !(task.children && task.children.length);
+  }
+
+  /**
+   * 在参照任务旁边插入新任务。where: 'before' | 'after'。
+   * 开启“完成置底”且参照任务已完成时，新任务（未完成）放到未完成区末尾，保持已完成项在最下面。
+   */
+  function insertSibling(tasks, refId, task, where, keepDoneAtBottom) {
+    const path = findPath(tasks, refId);
+    if (!path) return false;
+    const { task: ref, siblings, index } = path[path.length - 1];
+    if (keepDoneAtBottom && ref.done && !task.done) insertTask(siblings, task, true);
+    else siblings.splice(where === 'before' ? index : index + 1, 0, task);
+    return true;
+  }
+
+  /** 降级：变成上一个同级任务的最后一个子任务。第一个任务，或未完成任务的上一个同级已完成时不可用 */
+  function indentTask(tasks, id, opts) {
+    const path = findPath(tasks, id);
+    if (!path) return false;
+    const { task, siblings, index } = path[path.length - 1];
+    if (index === 0) return false;
+    const prev = siblings[index - 1];
+    if (prev.done && !task.done) return false;
+    siblings.splice(index, 1);
+    prev.collapsed = false;
+    if (task.done) prev.children.push(task);
+    else insertTask(prev.children, task, !!(opts && opts.keepDoneAtBottom));
+    return true;
+  }
+
+  /** 升级：移出父任务，放到它后面。已在顶层时不可用；完成置底时，已完成的任务移到未完成父任务的同级末尾 */
+  function outdentTask(tasks, id, opts) {
+    const path = findPath(tasks, id);
+    if (!path || path.length < 2) return false;
+    const { task, siblings, index } = path[path.length - 1];
+    const parent = path[path.length - 2];
+    siblings.splice(index, 1);
+    if (opts && opts.keepDoneAtBottom && task.done && !parent.task.done) parent.siblings.push(task);
+    else parent.siblings.splice(parent.index + 1, 0, task);
+    return true;
+  }
+
+  /** 在同级中上移 / 下移一位。开启“完成置底”时不跨越已完成与未完成的分界 */
+  function shiftTask(tasks, id, dir, opts) {
+    const path = findPath(tasks, id);
+    if (!path) return false;
+    const { task, siblings, index } = path[path.length - 1];
+    const to = dir === 'up' ? index - 1 : index + 1;
+    if (to < 0 || to >= siblings.length) return false;
+    if (opts && opts.keepDoneAtBottom && siblings[to].done !== task.done) return false;
+    siblings[index] = siblings[to];
+    siblings[to] = task;
     return true;
   }
 
@@ -526,6 +597,11 @@
     moveTask,
     moveTaskInState,
     insertTask,
+    insertSibling,
+    indentTask,
+    outdentTask,
+    shiftTask,
+    isBlankTask,
     setDone,
     countOpen,
     countOverdue,

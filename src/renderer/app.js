@@ -2,6 +2,7 @@
 (function () {
   const { $, el, icon, toast, openModal, closeModal, confirmDialog } = window.Dom;
   const TL = window.TaskLib;
+  const KM = window.Keymap;
   const api = window.api;
 
   /* ---------- 状态 ---------- */
@@ -24,11 +25,42 @@
   let draggingTaskId = null;
   let currentDropRow = null;
   let currentDropPlacement = null;
+  let keyBindings = {}; // 当前生效的快捷键 { 操作id: 组合键 }
+  let keyLookup = new Map(); // 组合键 -> 操作id
+  const fresh = new Set(); // 用快捷键新建、还没写内容的任务 id；离开时仍为空就丢弃
+  let pointerDown = false;
+  let sweepPending = false; // 鼠标按下期间离开了空白新任务，松开后再清理
+  const ROW_TEXT = '.row .task-text'; // 配合 pendingFocus.sel，定位任务行里的文字框
 
   const short = (t) => TL.taskLabel(t, 18);
   const nodeOf = (id) => document.querySelector(`.node[data-id="${CSS.escape(id)}"]`);
   const getPredicate = () => TL.andPredicates(TL.makeTagPredicate(filter), TL.makeSearchPredicate(searchText));
   const isComposing = (e) => e.isComposing || e.keyCode === 229;
+
+  /* ---------- 快捷键：显示辅助 ---------- */
+  const keyOf = (id) => (keyBindings[id] ? KM.formatCombo(keyBindings[id]) : '');
+  const withKey = (label, id) => (keyOf(id) ? `${label}（${keyOf(id)}）` : label);
+
+  function applyKeyHints() {
+    $('#search').placeholder = withKey('搜索内容、标签', 'search');
+    $('#btn-settings').title = withKey('设置', 'openSettings');
+    $('#btn-filter').title = withKey('按标签筛选', 'toggleFilter');
+  }
+
+  function rebuildKeys() {
+    keyBindings = KM.resolve(state.settings.keybindings);
+    keyLookup = KM.buildLookup(keyBindings);
+    applyKeyHints();
+  }
+
+  function taskTextTitle() {
+    const parts = ['Enter 换行'];
+    if (keyOf('addSibling')) parts.push(`${keyOf('addSibling')} 新建同级任务`);
+    if (keyOf('addChild')) parts.push(`${keyOf('addChild')} 新建子任务`);
+    parts.push(`${[keyOf('finishEdit'), 'Esc'].filter(Boolean).join(' 或 ')} 结束编辑`);
+    if (keyOf('openShortcuts')) parts.push(`${keyOf('openShortcuts')} 查看全部快捷键`);
+    return parts.join(' · ');
+  }
 
   function clearDropIndicators() {
     if (currentDropRow) {
@@ -57,6 +89,7 @@
     api.save(state);
   }
   window.addEventListener('pagehide', () => {
+    dropFresh(null, true);
     flush();
     window.Memo.flush();
   });
@@ -107,7 +140,7 @@
     }
     $('#tb-title').replaceChildren(name, el('span', { class: 'sub', text: `${open} 项待办` }));
     const mode = $('#btn-mode');
-    const label = note ? '切换为普通窗口' : '切换为便笺模式';
+    const label = withKey(note ? '切换为普通窗口' : '切换为便笺模式', 'toggleMode');
     mode.replaceChildren(icon(note ? 'window' : 'sticky'));
     mode.title = label;
     mode.setAttribute('aria-label', label);
@@ -117,7 +150,7 @@
     const pinned = !!state.settings.noteAlwaysOnTop;
     const pin = $('#btn-pin');
     pin.setAttribute('aria-pressed', String(pinned));
-    pin.title = pinned ? '取消置顶' : '置顶显示';
+    pin.title = withKey(pinned ? '取消置顶' : '置顶显示', 'togglePin');
     pin.setAttribute('aria-label', pin.title);
   }
 
@@ -258,6 +291,7 @@
 
   /* ---------- 渲染：任务列表 ---------- */
   function renderList() {
+    dropFresh(pendingFocus && pendingFocus.id);
     const list = $('#list');
     const scrollTop = list.scrollTop;
     const pred = getPredicate();
@@ -303,15 +337,20 @@
     }
 
     if (pendingFocus) {
-      const { id, sel } = pendingFocus;
+      const { id, sel, range, alt } = pendingFocus;
       pendingFocus = null;
-      const node = nodeOf(id);
+      let node = nodeOf(id);
+      const usedAlt = !node && !!alt;
+      if (usedAlt) node = nodeOf(alt); // 原任务已不可见（已删除、收进“已完成”），改为聚焦相邻任务
       const target = node && node.querySelector(':scope > ' + sel);
       if (target) {
         target.focus();
+        if (range === 'end') target.setSelectionRange(target.value.length, target.value.length);
+        else if (range && !usedAlt && target.setSelectionRange) target.setSelectionRange(range[0], range[1]);
         target.scrollIntoView({ block: 'nearest' });
       }
     }
+    if (fresh.size) scheduleSweep();
   }
 
   function noResults() {
@@ -467,7 +506,7 @@
       maxlength: '20000',
       spellcheck: 'false',
       placeholder: '写点内容…',
-      title: 'Enter 换行，Ctrl+Enter 或 Esc 结束编辑',
+      title: taskTextTitle(),
       'aria-label': '任务内容',
     });
     text.value = t.note;
@@ -475,18 +514,16 @@
       t.note = text.value;
       commit();
     });
+    // 新建、缩进、移动等快捷键由 onGlobalKey 统一处理；Esc 固定为结束编辑
     text.addEventListener('keydown', (e) => {
       if (isComposing(e)) return;
-      if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || e.key === 'Escape') {
+      if (e.key === 'Escape') {
         e.preventDefault();
         text.blur();
       }
     });
     text.addEventListener('change', () => {
-      // 结束编辑时去掉首尾空白和行尾空格，连续空行最多保留一个
-      const v = text.value.replace(/\r\n?/g, '\n').replace(/[^\S\n]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
-      text.value = v;
-      t.note = v;
+      tidyText(text, t); // 结束编辑时规整空白
       commit();
     });
 
@@ -504,6 +541,8 @@
         iconBtn('trash', '删除任务', () => deleteTask(project, t), undefined, 'del')
       )
     );
+
+    // 快捷键新建的空白任务的清理见 dropFresh / scheduleSweep，这里不逐行监听
 
     row.addEventListener('dragover', (e) => {
       if (!draggingTaskId || draggingTaskId === t.id) return;
@@ -602,6 +641,9 @@
           if (e.key === 'Enter' || e.key === 'Escape') {
             e.preventDefault();
             input.blur();
+            const rowEl = meta.closest('.row');
+            const ta = rowEl && rowEl.querySelector('.task-text');
+            if (ta) ta.focus(); // 回到文字框，方便继续用键盘操作
           }
         });
         input.addEventListener('blur', () => {
@@ -663,6 +705,13 @@
       }
     };
 
+    // 快捷键触发：直接进入时间编辑
+    meta.addEventListener('edit-due', () => {
+      if (editingDue) return;
+      editingDue = true;
+      paintDue();
+    });
+
     const tagsChanged = () => {
       commit();
       syncInfo();
@@ -707,7 +756,13 @@
     };
     tagInput.addEventListener('keydown', (e) => {
       if (isComposing(e)) return;
-      if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
+      if (e.key === 'Enter' && !tagInput.value.trim()) {
+        // 标签框是空的再按回车：回到任务文字
+        e.preventDefault();
+        const rowEl = meta.closest('.row');
+        const ta = rowEl && rowEl.querySelector('.task-text');
+        if (ta) ta.focus();
+      } else if (e.key === 'Enter' || e.key === ',' || e.key === '，') {
         e.preventDefault();
         addTags();
       } else if (e.key === 'Backspace' && !tagInput.value && t.tags.length) {
@@ -716,6 +771,9 @@
         tagsChanged();
       } else if (e.key === 'Escape') {
         tagInput.blur();
+        const rowEl = meta.closest('.row');
+        const ta = rowEl && rowEl.querySelector('.task-text');
+        if (ta) ta.focus();
       }
     });
     tagInput.addEventListener('blur', addTags);
@@ -770,6 +828,7 @@
             'button',
             {
               class: 'add-open',
+              title: withKey('添加任务', 'newTask'),
               type: 'button',
               onclick: () => {
                 composer = { pid: project.id, text: '' };
@@ -802,7 +861,8 @@
       });
       ta.addEventListener('keydown', (e) => {
         if (isComposing(e)) return;
-        if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
+        const combo = KM.comboFromEvent(e);
+        if ((e.key === 'Enter' && (e.ctrlKey || e.metaKey)) || (combo && combo === keyBindings.addSibling)) {
           e.preventDefault();
           composer.text = ta.value;
           submit(false);
@@ -1118,7 +1178,8 @@
     }
   }
 
-  function openSettings() {
+  function openSettings(initialTab) {
+    const startTab = initialTab === 'keys' ? 'keys' : 'general';
     const s = state.settings;
     const opacity = el('input', { type: 'range', min: '0.4', max: '1', step: '0.05', 'aria-label': '便笺透明度' });
     opacity.value = String(s.noteOpacity);
@@ -1135,9 +1196,9 @@
       commit();
     });
 
-    const body = el(
+    const general = el(
       'div',
-      {},
+      { class: 'tab-panel', id: 'panel-general', role: 'tabpanel', 'aria-labelledby': 'tab-general' },
       switchRow('开机自启动', '计算机开机登录后自动启动待办清单', s.autoStart, (v) => {
         s.autoStart = v;
         commit();
@@ -1198,8 +1259,352 @@
       })
     );
     lead.id = 'lead-min';
-    openModal({ title: '设置', body, actions: null });
+
+    const keysUi = window.KeysPanel.build({
+      getSettings: () => state.settings,
+      getBindings: () => keyBindings,
+      onChange: () => {
+        commit();
+        rebuildKeys();
+        renderTitlebar();
+      },
+    });
+    const tabs = [
+      { id: 'general', label: '常规', panel: general },
+      { id: 'keys', label: '快捷键', panel: keysUi.panel },
+    ];
+    const tabBtns = tabs.map((t) => el('button', { class: 'tab', type: 'button', role: 'tab', id: 'tab-' + t.id, 'aria-controls': 'panel-' + t.id }, t.label));
+    const select = (id) => {
+      tabs.forEach((t, i) => {
+        const on = t.id === id;
+        tabBtns[i].setAttribute('aria-selected', String(on));
+        tabBtns[i].tabIndex = on ? 0 : -1;
+        t.panel.hidden = !on;
+      });
+    };
+    tabBtns.forEach((b, i) => {
+      b.addEventListener('click', () => select(tabs[i].id));
+      b.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const n = (i + (e.key === 'ArrowRight' ? 1 : -1) + tabs.length) % tabs.length;
+        select(tabs[n].id);
+        tabBtns[n].focus();
+      });
+    });
+    select(startTab);
+    const body = el('div', {}, el('div', { class: 'tabs', role: 'tablist', 'aria-label': '设置分类' }, ...tabBtns), general, keysUi.panel);
+    openModal({
+      title: '设置',
+      body,
+      actions: null,
+      className: 'modal-wide',
+      focus: tabBtns[tabs.findIndex((t) => t.id === startTab)],
+      onClose: () => {
+        keysUi.dispose();
+        renderAll(); // 快捷键可能有变，刷新列表里的提示文字
+      },
+    });
     renderUpdateRow();
+  }
+
+  /* ---------- 快捷键：空白新任务 ---------- */
+  let sweepTimer = null;
+
+  /**
+   * 删除“用快捷键新建、一直没写内容”的任务，返回被删除的 id。keepId 是马上要聚焦的任务。
+   * 默认跳过焦点仍在其中的那一行；force 时（关闭窗口前）不跳过。
+   */
+  function dropFresh(keepId, force) {
+    if (!fresh.size) return [];
+    if (pointerDown && !force) {
+      sweepPending = true; // 鼠标按下期间不动列表，松开后再清理
+      return [];
+    }
+    const active = document.activeElement;
+    const dropped = [];
+    for (const id of Array.from(fresh)) {
+      const found = TL.findInState(state, id);
+      if (!found || !TL.isBlankTask(found.task)) {
+        fresh.delete(id); // 已经写了内容（或已不存在），不再跟踪
+        continue;
+      }
+      if (id === keepId) continue;
+      const n = nodeOf(id);
+      const row = n && n.querySelector(':scope > .row');
+      if (!force && row && active && row.contains(active)) continue; // 还在这一行里编辑（文字、标签、时间）
+      const { siblings, index } = found.path[found.path.length - 1];
+      siblings.splice(index, 1);
+      fresh.delete(id);
+      dropped.push(id);
+    }
+    if (dropped.length) commit();
+    return dropped;
+  }
+
+  /** 记下任务文字框里的焦点和光标，重绘后恢复 */
+  function captureFocus() {
+    const a = document.activeElement;
+    if (!a || !a.matches) return null;
+    if (a.matches('.add-box textarea')) {
+      composerFocus = true;
+      return null;
+    }
+    if (!a.matches('.node > .row .task-text')) return null;
+    return { id: a.closest('.node').dataset.id, sel: ROW_TEXT, range: [a.selectionStart, a.selectionEnd] };
+  }
+
+  /** 焦点离开后检查一次。焦点在按钮、输入框上时只隐藏被丢弃的行，避免重绘把刚点中的控件弄丢。 */
+  function scheduleSweep() {
+    if (sweepTimer || !fresh.size) return;
+    sweepTimer = setTimeout(() => {
+      sweepTimer = null;
+      const dropped = dropFresh(null);
+      if (!dropped.length) return;
+      const a = document.activeElement;
+      if (a && a !== document.body && !a.matches('.task-text')) {
+        dropped.forEach((id) => {
+          const n = nodeOf(id);
+          if (n) n.hidden = true;
+        });
+        renderTitlebar();
+        renderSidebar();
+      } else {
+        const keep = captureFocus();
+        if (keep) pendingFocus = keep;
+        renderAll();
+      }
+    }, 0);
+  }
+
+  /** 结束编辑时去掉首尾空白和行尾空格，连续空行最多保留一个 */
+  function tidyText(ta, t) {
+    const v = ta.value.replace(/\r\n?/g, '\n').replace(/[^\S\n]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').trim();
+    if (v !== ta.value) ta.value = v;
+    t.note = v;
+  }
+
+  function togglePin() {
+    state.settings.noteAlwaysOnTop = !state.settings.noteAlwaysOnTop;
+    renderTitlebar();
+    commit(true);
+  }
+
+  /* ---------- 快捷键：任务内操作 ---------- */
+  const keepDone = () => !!state.settings.completedToBottom;
+  const MIRROR_PROPS = ['fontFamily', 'fontSize', 'fontWeight', 'fontStyle', 'letterSpacing', 'lineHeight', 'wordSpacing', 'textIndent', 'tabSize', 'textTransform', 'paddingTop', 'paddingRight', 'paddingBottom', 'paddingLeft'];
+
+  /** 光标是否在文字框的第一行（dir<0）或最后一行（dir>0），按显示行（含自动换行）判断 */
+  function caretAtEdge(ta, dir) {
+    if (ta.selectionStart !== ta.selectionEnd) return false;
+    const cs = getComputedStyle(ta);
+    const mirror = el('div', {
+      style: { position: 'absolute', visibility: 'hidden', left: '-9999px', top: '0', whiteSpace: 'pre-wrap', overflowWrap: 'break-word', boxSizing: 'border-box', width: ta.clientWidth + 'px' },
+    });
+    MIRROR_PROPS.forEach((p) => {
+      mirror.style[p] = cs[p];
+    });
+    document.body.append(mirror);
+    const height = (s) => {
+      mirror.textContent = s + '\u200b';
+      return mirror.offsetHeight;
+    };
+    const upTo = ta.value.slice(0, ta.selectionStart);
+    const at = dir < 0 ? height(upTo) <= height('') : height(upTo) >= height(ta.value);
+    mirror.remove();
+    return at;
+  }
+
+  /** 除自身及其子任务外，界面上相邻的任务 id（删除 / 完成后把焦点交给它） */
+  function adjacentTaskId(ta, preferNext) {
+    const self = ta.closest('.node');
+    let prev = null;
+    let next = null;
+    for (const x of $('#list').querySelectorAll('.node > .row .task-text')) {
+      if (self.contains(x)) continue;
+      if (x.compareDocumentPosition(ta) & Node.DOCUMENT_POSITION_FOLLOWING) prev = x;
+      else if (!next) next = x;
+    }
+    const pick = preferNext ? next || prev : prev || next;
+    return pick ? pick.closest('.node').dataset.id : null;
+  }
+
+  /** 在相邻任务之间跳转。用默认的上下方向键时，只在光标已到首行 / 末行才跳。 */
+  function moveFocus(c, dir, combo) {
+    if (/^Arrow(Up|Down)$/.test(combo) && !caretAtEdge(c.ta, dir)) return false;
+    const all = Array.from($('#list').querySelectorAll('.node > .row .task-text'));
+    const target = all[all.indexOf(c.ta) + dir];
+    if (!target) return false;
+    target.focus();
+    const pos = dir < 0 ? target.value.length : 0;
+    target.setSelectionRange(pos, pos);
+    target.scrollIntoView({ block: 'nearest' });
+    return true;
+  }
+
+  /** 结构变化（缩进、移动）后重绘，焦点和光标留在原任务上。无法执行时什么也不做。 */
+  function restructure(c, change) {
+    if (!change()) return true;
+    commit();
+    pendingFocus = { id: c.id, sel: ROW_TEXT, range: [c.ta.selectionStart, c.ta.selectionEnd] };
+    renderAll();
+    return true;
+  }
+
+  /** 新建空白任务并把光标放进去。mode：'below' 下方同级 | 'above' 上方同级 | 'child' 子任务 */
+  function createBlank(c, mode) {
+    if (getPredicate()) {
+      toast('搜索或筛选中不能新建，请先清除搜索和筛选');
+      return true;
+    }
+    tidyText(c.ta, c.task);
+    const keep = keepDone();
+    const { task, project, path } = c;
+    const nt = TL.createTask('');
+    if (mode === 'child') {
+      if (task.done) TL.setDone(project.tasks, task.id, false, { moveToBottom: keep });
+      task.collapsed = false;
+      TL.insertTask(task.children, nt, keep);
+    } else {
+      const parent = path.length > 1 ? path[path.length - 2].task : null;
+      if (parent && parent.done) TL.setDone(project.tasks, parent.id, false, { moveToBottom: keep });
+      TL.insertSibling(project.tasks, task.id, nt, mode === 'above' ? 'before' : 'after', keep);
+    }
+    fresh.add(nt.id);
+    commit();
+    pendingFocus = { id: nt.id, sel: ROW_TEXT };
+    renderAll();
+    return true;
+  }
+
+  const indentTask = (c) => restructure(c, () => TL.indentTask(c.project.tasks, c.id, { keepDoneAtBottom: keepDone() }));
+  const outdentTask = (c) => restructure(c, () => TL.outdentTask(c.project.tasks, c.id, { keepDoneAtBottom: keepDone() }));
+
+  /** 每个函数收到 (任务上下文, 组合键)，返回 false 表示不处理，交还给浏览器默认行为 */
+  const TASK_ACTIONS = {
+    // 空白任务上再按：不再新建，改为升一级（和大纲笔记一样，连按两次回车跳出当前层级）
+    addSibling: (c) => (TL.isBlankTask(c.task) ? outdentTask(c) : createBlank(c, 'below')),
+    addSiblingAbove: (c) => createBlank(c, 'above'),
+    addChild: (c) => (TL.isBlankTask(c.task) ? indentTask(c) : createBlank(c, 'child')),
+    indent: indentTask,
+    outdent: outdentTask,
+    moveUp: (c) => restructure(c, () => TL.shiftTask(c.project.tasks, c.id, 'up', { keepDoneAtBottom: keepDone() })),
+    moveDown: (c) => restructure(c, () => TL.shiftTask(c.project.tasks, c.id, 'down', { keepDoneAtBottom: keepDone() })),
+    toggleDone: (c) => {
+      const completing = !c.task.done;
+      // 完成后任务会收进“已完成”，看不到了，焦点改交给相邻任务
+      pendingFocus = { id: c.id, sel: ROW_TEXT, range: [c.ta.selectionStart, c.ta.selectionEnd], alt: completing && keepDone() ? adjacentTaskId(c.ta, true) : null };
+      toggleDone(c.project, c.task);
+      return true;
+    },
+    toggleCollapse: (c) => {
+      if (!c.task.children.length) return true;
+      c.task.collapsed = !c.task.collapsed;
+      commit();
+      pendingFocus = { id: c.id, sel: ROW_TEXT, range: [c.ta.selectionStart, c.ta.selectionEnd] };
+      renderList();
+      return true;
+    },
+    editDue: (c) => {
+      const meta = nodeOf(c.id).querySelector(':scope > .row .meta');
+      if (meta) meta.dispatchEvent(new Event('edit-due'));
+      return true;
+    },
+    editTag: (c) => {
+      const input = nodeOf(c.id).querySelector(':scope > .row .tag-input');
+      if (input) input.focus();
+      return true;
+    },
+    deleteTask: (c) => {
+      const next = adjacentTaskId(c.ta, false);
+      pendingFocus = next ? { id: next, sel: ROW_TEXT, range: 'end' } : null;
+      fresh.delete(c.id);
+      deleteTask(c.project, c.task);
+      return true;
+    },
+    focusPrev: (c, combo) => moveFocus(c, -1, combo),
+    focusNext: (c, combo) => moveFocus(c, 1, combo),
+    finishEdit: (c) => {
+      c.ta.blur();
+      return true;
+    },
+  };
+
+  /* ---------- 快捷键：全局操作 ---------- */
+  function currentProject() {
+    const a = document.activeElement;
+    const n = a && a.closest ? a.closest('.node') : null;
+    const found = n && TL.findInState(state, n.dataset.id);
+    if (found) return found.project;
+    return (state.ui.view !== 'all' && projectById(state.ui.view)) || state.projects[0];
+  }
+
+  function cycleProject(step) {
+    const ids = ['all', ...state.projects.map((p) => p.id)];
+    const i = Math.max(0, ids.indexOf(state.ui.view));
+    setView(ids[(i + step + ids.length) % ids.length]);
+  }
+
+  function showToolbar() {
+    if (state.settings.noteMode) document.body.classList.add('show-search'); // 便笺模式下工具栏平时是隐藏的
+  }
+
+  const GLOBAL_ACTIONS = {
+    newTask: () => {
+      const project = currentProject();
+      if (!composer || composer.pid !== project.id) composer = { pid: project.id, text: '' };
+      addingSub = null;
+      composerFocus = true;
+      renderList();
+    },
+    search: () => {
+      showToolbar();
+      const input = $('#search');
+      input.focus();
+      input.select();
+    },
+    toggleFilter: () => {
+      showToolbar();
+      tagbarOpen = !tagbarOpen;
+      renderTagbar();
+    },
+    prevProject: () => cycleProject(-1),
+    nextProject: () => cycleProject(1),
+    openSettings: () => openSettings(),
+    openShortcuts: () => openSettings('keys'),
+    toggleMode: () => setNoteMode(!state.settings.noteMode),
+    togglePin,
+  };
+
+  const REPEATABLE = new Set(['moveUp', 'moveDown', 'focusPrev', 'focusNext']); // 按住不放时可以连续触发的操作
+
+  function taskContext(target) {
+    if (!target || !target.matches || !target.matches('.node > .row .task-text')) return null;
+    const found = TL.findInState(state, target.closest('.node').dataset.id);
+    return found ? { ta: target, id: found.task.id, task: found.task, project: found.project, path: found.path } : null;
+  }
+
+  function onKeyDown(e) {
+    if (!state || isComposing(e) || e.defaultPrevented) return;
+    if ($('#modal-root').childElementCount) return; // 弹窗打开时不响应
+    if (e.target.closest && e.target.closest('#memo-panel')) return; // 备忘录编辑器有自己的按键
+    const combo = KM.comboFromEvent(e);
+    const id = combo && keyLookup.get(combo);
+    if (!id) return;
+    const scope = KM.ACTIONS_BY_ID[id].scope;
+    let ctx = null;
+    if (scope === 'task') {
+      ctx = taskContext(e.target);
+      if (!ctx) return; // 光标不在任务文字里，按键保持原样（如 Tab 仍然移动焦点）
+    }
+    if (e.repeat && !REPEATABLE.has(id)) {
+      e.preventDefault();
+      return;
+    }
+    let handled = true;
+    if (scope === 'task') handled = TASK_ACTIONS[id](ctx, combo);
+    else GLOBAL_ACTIONS[id]();
+    if (handled) e.preventDefault();
   }
 
   /* ---------- 其他 ---------- */
@@ -1230,6 +1635,7 @@
   }
 
   function renderAll() {
+    dropFresh(pendingFocus && pendingFocus.id);
     renderTitlebar();
     renderSidebar();
     renderTagbar();
@@ -1254,11 +1660,7 @@
     $('#btn-drawer').addEventListener('click', () => document.body.classList.toggle('drawer-open'));
     $('#scrim').addEventListener('click', () => document.body.classList.remove('drawer-open'));
     $('#btn-mode').addEventListener('click', () => setNoteMode(!state.settings.noteMode));
-    $('#btn-pin').addEventListener('click', () => {
-      state.settings.noteAlwaysOnTop = !state.settings.noteAlwaysOnTop;
-      renderTitlebar();
-      commit(true);
-    });
+    $('#btn-pin').addEventListener('click', togglePin);
     $('#btn-settings').addEventListener('click', openSettings);
     $('#btn-min').addEventListener('click', () => api.minimize());
     $('#btn-max').addEventListener('click', () => api.toggleMaximize());
@@ -1316,15 +1718,23 @@
       addProject(name);
     });
 
-    document.addEventListener('keydown', (e) => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'f') {
-        e.preventDefault();
-        if (state.settings.noteMode) {
-          document.body.classList.add('show-search');
-        }
-        search.focus();
-        search.select();
+    // 快捷键：统一在 onKeyDown 里按当前键位表分发
+    document.addEventListener('keydown', onKeyDown);
+    // 鼠标按下期间不重绘列表，否则行位置变化会让这次点击失效
+    document.addEventListener('mousedown', () => (pointerDown = true), true);
+    const released = () => {
+      pointerDown = false;
+      if (sweepPending) {
+        sweepPending = false;
+        scheduleSweep();
       }
+    };
+    document.addEventListener('mouseup', released, true);
+    document.addEventListener('dragend', released, true);
+    window.addEventListener('blur', released);
+    // 焦点离开一个用快捷键新建、还没写内容的任务时，把它丢弃
+    document.addEventListener('focusout', () => {
+      if (fresh.size && !listRendering) scheduleSweep();
     });
     window.addEventListener('resize', checkNarrow);
 
@@ -1356,6 +1766,7 @@
     dataDir = res.dataDir;
     shortcut = res.shortcut || '';
     appVersion = res.version || '';
+    rebuildKeys();
     api.onUpdateStatus(onUpdateStatus);
     api.getUpdateStatus().then(onUpdateStatus);
     bindStatic();

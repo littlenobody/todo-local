@@ -81,7 +81,7 @@
 
   function focusables(root) {
     return Array.from(root.querySelectorAll('button, input, select, textarea, [tabindex]:not([tabindex="-1"])')).filter(
-      (n) => !n.disabled && !n.hidden
+      (n) => !n.disabled && !n.hidden && !n.closest('[hidden]')
     );
   }
 
@@ -91,7 +91,7 @@
     const closeBtn = el('button', { class: 'icon-btn', type: 'button', 'aria-label': '关闭', title: '关闭', onclick: closeModal }, icon('close'));
     const dialog = el(
       'div',
-      { class: 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': opts.title },
+      { class: 'modal' + (opts.className ? ' ' + opts.className : ''), role: 'dialog', 'aria-modal': 'true', 'aria-label': opts.title },
       el('div', { class: 'modal-head' }, el('h2', { text: opts.title }), closeBtn),
       opts.body,
       opts.actions ? el('div', { class: 'modal-actions' }, opts.actions) : null

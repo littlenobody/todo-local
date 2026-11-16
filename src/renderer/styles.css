@@ -521,6 +521,50 @@ input[role="switch"]:checked::after { transform: translateX(16px); }
 .settings-foot { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
 .settings-info { margin: 10px 0 0; font-size: 12px; color: var(--muted); word-break: break-all; }
 
+/* ---------- 设置标签页 / 快捷键 ---------- */
+.modal.modal-wide { width: min(560px, 100%); }
+.tabs { display: flex; gap: 2px; margin: 0 0 4px; border-bottom: 1px solid var(--border); }
+.tab {
+  padding: 6px 14px; margin-bottom: -1px;
+  border: 0; border-bottom: 2px solid transparent;
+  background: transparent; color: var(--muted);
+}
+.tab:hover { color: var(--text); }
+.tab[aria-selected="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tab-panel[hidden] { display: none; }
+
+.keys-intro { margin: 8px 0 0; font-size: 12px; color: var(--muted); }
+.keys-group { display: flex; align-items: baseline; gap: 8px; margin: 14px 0 2px; font-size: 13px; }
+.keys-group span { font-weight: 400; font-size: 12px; color: var(--muted); }
+.key-row {
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 12px;
+  padding: 7px 0; border-bottom: 1px solid var(--border);
+}
+.key-label { display: grid; gap: 1px; min-width: 0; flex: 1 1 160px; }
+.key-ctrl { display: flex; align-items: center; gap: 6px; flex: none; }
+.key-btn {
+  display: inline-flex; align-items: center; justify-content: center; gap: 3px;
+  min-width: 128px; min-height: 28px; padding: 2px 8px;
+  border: 1px solid var(--border); border-radius: 6px;
+  background: var(--surface);
+}
+.key-btn:hover { border-color: var(--accent); }
+.key-btn.recording { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent); }
+.key-wait { font-size: 12px; color: var(--accent); }
+.key-none { font-size: 12px; color: var(--muted); }
+.key-plus { font-size: 11px; color: var(--muted); }
+kbd {
+  display: inline-block; min-width: 20px; padding: 0 6px;
+  border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px;
+  background: var(--bg); color: var(--text);
+  font: inherit; font-size: 12px; line-height: 18px; text-align: center;
+}
+.key-note {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  flex: 1 0 100%;
+  font-size: 12px; color: var(--danger);
+}
+
 #toast {
   position: fixed;
   left: 50%; bottom: 64px;
